@@ -4,12 +4,18 @@
 
 This is a bachelor final project at Aalto University investigating whether QUIC's connection migration feature can solve the frustrating problem of dropped video calls when switching between networks (WiFi ↔ mobile data).
 
+## Academic Context
+**Student:** Tong Ki Chun  
+**Advisor:** Pasi Sarolahti  
+**Institution:** Aalto University, Department of Electrical Engineering  
+**Type:** Bachelor's final project
+
 ## 🎯 Project Goals
 
 Video calls today break when you switch networks. This project aims to build a prototype that demonstrates:
 
 - **Seamless handover** - Calls continue when switching from WiFi to mobile data
-- **Sub-second migration** - Network transitions complete in <500ms  
+- **Sub-second migration** - Network transitions complete in <1 second
 - **Real-world validation** - User testing to measure actual experience improvement
 - **Open research** - Reproducible methodology for future QUIC + multimedia research
 
@@ -31,12 +37,12 @@ Video Calling App (Qt)
 
 ## 📅 Development Timeline
 
-- **Phase 0.5** (Sep): Benchmark existing apps (Zoom, Teams, etc.) for reconnection behavior
-- **Phase 1** (Sep-Oct): Build QUIC foundation with basic migration
-- **Phase 2** (Nov): Integrate video streaming  
-- **Phase 3** (Dec-Jan): Implement seamless handover
-- **Phase 4** (Feb): Performance evaluation + user testing
-- **Phase 5** (Mar): Final documentation
+- **Phase 0.5** (Sep): Baseline study - test existing video calling apps during network handovers
+- **Phase 1** (Sep-Oct): QUIC foundation - implement connection migration capability
+- **Phase 2** (Nov): Video calling over QUIC - basic media streaming
+- **Phase 3** (Dec-Jan): Handover optimization - buffer management and migration timing
+- **Phase 4** (Feb): Evaluation - performance testing and user experience validation
+- **Phase 5** (Mar): Documentation - final report and thesis preparation
 
 ## 🔍 Current Status
 
@@ -48,7 +54,7 @@ Follow along as this research develops! The goal is to show that protocol-level 
 
 | Goal | Target | Why It Matters |
 |------|--------|----------------|
-| Handover time | <500ms | Below typical user perception threshold |
+| Handover time | <1 second | Below user perception threshold in >90% of cases |
 | Call survival rate | >95% | Reliable enough for everyday use |
 | User preference | >80% prefer over baseline | Measurable UX improvement |
 
@@ -57,15 +63,15 @@ Follow along as this research develops! The goal is to show that protocol-level 
 - **QUIC:** quiche (Cloudflare's Rust implementation)
 - **Media:** FFmpeg for video/audio processing
 - **GUI:** Qt 6 for cross-platform interface
-- **Platform:** Linux primary, macOS secondary
+- **Platform:** iOS primary for baseline study, Linux + macOS for prototype development
 - **Testing:** Controlled network environments + user studies
 
 ## Evaluation Plan
 
 ### Quantitative Testing
-- **50 handovers per scenario** across 3 network transition types
+- **50 handovers per scenario** testing QuicVid prototype performance
 - **Automated metrics:** timing, frame loss, quality degradation
-- **Statistical comparison** against TCP reconnection baseline
+- **Statistical comparison** against baseline study results from existing apps
 
 ### User Study  
 - **15 participants** testing both QUIC and TCP versions
@@ -97,4 +103,3 @@ If successful, this prototype could lead to:
 - Mobile app development
 - Production deployment studies
 - Follow-up research on multi-party scenarios
-
