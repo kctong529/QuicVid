@@ -25,31 +25,31 @@ Video calls today break when you switch networks. This project aims to build a p
 Video Calling App (Qt)
 ├── Media Pipeline (FFmpeg) - H.264 video + Opus audio
 ├── QUIC Transport (quiche) - Connection migration capability  
-├── Handover Logic - Network change detection and migration triggers
+├── Handover Logic - Network change detection + migration triggers
 └── Testing Framework - Automated and user testing tools
 ```
 
 ## 📅 Development Timeline
 
-- **Phase 0.5 (Sep)**: User tests for problem baseline
-- **Phase 1** (Sep-Oct): QUIC foundation with basic migration
-- **Phase 2** (Nov): Video streaming integration  
-- **Phase 3** (Dec-Jan): Seamless handover implementation
-- **Phase 4** (Feb): Performance evaluation and user testing
-- **Phase 5** (Mar): Documentation
+- **Phase 0.5** (Sep): Benchmark existing apps (Zoom, Teams, etc.) for reconnection behavior
+- **Phase 1** (Sep-Oct): Build QUIC foundation with basic migration
+- **Phase 2** (Nov): Integrate video streaming  
+- **Phase 3** (Dec-Jan): Implement seamless handover
+- **Phase 4** (Feb): Performance evaluation + user testing
+- **Phase 5** (Mar): Final documentation
 
 ## 🔍 Current Status
 
-🚧 **In Development** - Setting up foundation and QUIC integration
+🚧 **In progress** - Setting up foundation and QUIC integration
 
-Follow along as this research unfolds! The goal is to demonstrate that protocol-level improvements can solve real user problems.
+Follow along as this research develops! The goal is to show that protocol-level improvements can directly solve real user problems.
 
 ## 📊 Success Metrics (Targets)
 
 | Goal | Target | Why It Matters |
 |------|--------|----------------|
-| Handover time | <500ms | Below user perception threshold |
-| Call survival rate | >95% | Reliable enough for real use |
+| Handover time | <500ms | Below typical user perception threshold |
+| Call survival rate | >95% | Reliable enough for everyday use |
 | User preference | >80% prefer over baseline | Measurable UX improvement |
 
 ## 🛠️ Tech Stack
@@ -59,6 +59,18 @@ Follow along as this research unfolds! The goal is to demonstrate that protocol-
 - **GUI:** Qt 6 for cross-platform interface
 - **Platform:** Linux primary, macOS secondary
 - **Testing:** Controlled network environments + user studies
+
+## Evaluation Plan
+
+### Quantitative Testing
+- **50 handovers per scenario** across 3 network transition types
+- **Automated metrics:** timing, frame loss, quality degradation
+- **Statistical comparison** against TCP reconnection baseline
+
+### User Study  
+- **15 participants** testing both QUIC and TCP versions
+- **Blind comparison** - participants don't know which is which
+- **Standardized questionnaires** + interview feedback
 
 ## 📚 Why This Matters
 
