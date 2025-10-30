@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <time.h>
+#include <sys/time.h>
 #include "quiche.h"
 
 #define MAX_DATAGRAM_SIZE 1350
@@ -19,12 +20,11 @@ int main() {
         return 1;
     }
     
-    // ADD MATCHING ALPN
     quiche_config_set_application_protos(config,
         (uint8_t *)"\x08http/0.9", 9);
     
     quiche_config_verify_peer(config, false);
-    quiche_config_set_max_idle_timeout(config, 5000);
+    quiche_config_set_max_idle_timeout(config, 30000);
     quiche_config_set_initial_max_data(config, 10000000);
     quiche_config_set_initial_max_stream_data_bidi_local(config, 1000000);
     quiche_config_set_initial_max_stream_data_bidi_remote(config, 1000000);
@@ -65,20 +65,26 @@ int main() {
         return 1;
     }
 
-    printf("Client started\n");
+    printf("Ping client started\n");
 
     uint8_t out[MAX_DATAGRAM_SIZE], buf[65535];
     quiche_send_info si;
     ssize_t sent;
 
+    // Send initial handshake packets
     while ((sent = quiche_conn_send(conn, out, sizeof(out), &si)) > 0) {
-        ssize_t done = sendto(sock, out, sent, 0, (struct sockaddr *)&peer, sizeof(peer));
-        printf("Sent %zd bytes\n", done);
+        sendto(sock, out, sent, 0, (struct sockaddr *)&peer, sizeof(peer));
+        printf("Sent %zd bytes\n", sent);
     }
 
-    bool msg_sent = false, got_reply = false;
+    struct timeval last_ping = {0};
+    uint64_t stream_id = 0;
+    int ping_seq = 0;
+    struct timeval ping_sent_time = {0};
+    bool waiting_for_pong = false;
 
-    for (int i = 0; i < 5000 && !got_reply; i++) {
+    while (!quiche_conn_is_closed(conn)) {
+        // Receive packets
         ssize_t len = recvfrom(sock, buf, sizeof(buf), 0, NULL, NULL);
         
         if (len > 0) {
@@ -89,38 +95,84 @@ int main() {
                 (struct sockaddr *)&local, local_len
             };
             
-            quiche_conn_recv(conn, buf, len, &ri);
+            ssize_t done = quiche_conn_recv(conn, buf, len, &ri);
+            if (done < 0) {
+                fprintf(stderr, "quiche_conn_recv failed: %zd\n", done);
+            }
+            
+            // CRITICAL: Send response packets immediately after receiving
+            while ((sent = quiche_conn_send(conn, out, sizeof(out), &si)) > 0) {
+                sendto(sock, out, sent, 0, (struct sockaddr *)&peer, sizeof(peer));
+                printf("Sent %zd bytes in response\n", sent);
+            }
+        } else if (len < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            perror("recvfrom");
         }
 
-        if (quiche_conn_is_established(conn) && !msg_sent) {
-            printf("Connection established! Sending message...\n");
-            quiche_conn_stream_send(conn, 0, (uint8_t *)"Hello", 5, true, NULL);
-            msg_sent = true;
-        }
+        // Check if connection is established
+        if (quiche_conn_is_established(conn)) {
+            static bool printed = false;
+            if (!printed) {
+                printf("Connection established!\n");
+                printed = true;
+            }
 
-        if (msg_sent) {
-            uint8_t data[4096];
-            bool fin;
-            ssize_t n = quiche_conn_stream_recv(conn, 0, data, sizeof(data), &fin, NULL);
-            if (n > 0) {
-                printf("Reply: ");
-                fwrite(data, 1, n, stdout);
-                printf("\n");
-                if (fin) got_reply = true;
+            // Send ping every 1 second
+            struct timeval now;
+            gettimeofday(&now, NULL);
+            
+            if (!waiting_for_pong && 
+                (now.tv_sec - last_ping.tv_sec >= 1 || last_ping.tv_sec == 0)) {
+                
+                char ping_msg[64];
+                snprintf(ping_msg, sizeof(ping_msg), "PING %d", ping_seq);
+                
+                // Use same stream for all pings
+                stream_id = 0;
+                
+                quiche_conn_stream_send(conn, stream_id, 
+                                      (uint8_t *)ping_msg, strlen(ping_msg), 
+                                      false, NULL);  // Don't fin the stream
+                
+                gettimeofday(&ping_sent_time, NULL);
+                printf("Sent: %s\n", ping_msg);
+                
+                last_ping = now;
+                waiting_for_pong = true;
+                ping_seq++;
+            }
+
+            // Check for responses
+            if (waiting_for_pong) {
+                uint8_t data[4096];
+                bool fin;
+                ssize_t n = quiche_conn_stream_recv(conn, stream_id, data, sizeof(data), &fin, NULL);
+                
+                if (n > 0) {
+                    struct timeval now;
+                    gettimeofday(&now, NULL);
+                    
+                    long rtt_us = (now.tv_sec - ping_sent_time.tv_sec) * 1000000 +
+                                 (now.tv_usec - ping_sent_time.tv_usec);
+                    
+                    printf("Received: ");
+                    fwrite(data, 1, n, stdout);
+                    printf(" (RTT: %.2f ms)\n", rtt_us / 1000.0);
+                    
+                    waiting_for_pong = false;
+                }
             }
         }
 
+        // Always try to send pending packets (ACKs, etc)
         while ((sent = quiche_conn_send(conn, out, sizeof(out), &si)) > 0) {
             sendto(sock, out, sent, 0, (struct sockaddr *)&peer, sizeof(peer));
         }
 
-        if (quiche_conn_is_closed(conn)) {
-            printf("Connection closed\n");
-            break;
-        }
-
-        usleep(1000);
+        usleep(1000);  // 1ms sleep
     }
+
+    printf("Connection closed\n");
 
     quiche_conn_free(conn);
     quiche_config_free(config);

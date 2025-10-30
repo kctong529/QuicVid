@@ -29,11 +29,10 @@ int main() {
         return 1;
     }
     
-    // ADD ALPN - use http/0.9 which is simple
     quiche_config_set_application_protos(config,
         (uint8_t *)"\x08http/0.9", 9);
     
-    quiche_config_set_max_idle_timeout(config, 5000);
+    quiche_config_set_max_idle_timeout(config, 30000);
     quiche_config_set_initial_max_data(config, 10000000);
     quiche_config_set_initial_max_stream_data_bidi_local(config, 1000000);
     quiche_config_set_initial_max_stream_data_bidi_remote(config, 1000000);
@@ -74,6 +73,16 @@ int main() {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 perror("recvfrom");
             }
+            
+            // Send any pending packets even when no data received
+            if (conn) {
+                quiche_send_info si;
+                ssize_t sent;
+                while ((sent = quiche_conn_send(conn, out, sizeof(out), &si)) > 0) {
+                    sendto(sock, out, sent, 0, (struct sockaddr *)&peer, peer_len);
+                }
+            }
+            
             usleep(1000);
             continue;
         }
@@ -139,8 +148,11 @@ int main() {
                         fwrite(data, 1, n, stdout);
                         printf("\n");
                         
-                        quiche_conn_stream_send(conn, s, (uint8_t *)"ECHO: ", 6, false, NULL);
-                        quiche_conn_stream_send(conn, s, data, n, true, NULL);
+                        // Send combined echo response without closing stream
+                        char response[4096];
+                        int resp_len = snprintf(response, sizeof(response), "ECHO: %.*s", (int)n, data);
+                        
+                        quiche_conn_stream_send(conn, s, (uint8_t *)response, resp_len, false, NULL);
                         printf("Sent echo response\n");
                     }
                 }
