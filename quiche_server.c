@@ -166,13 +166,13 @@ void handle_connection(struct Connection *c, uint8_t *buf, ssize_t len,
             // Use c->conn
             ssize_t n = quiche_conn_stream_recv(c->conn, s, data, sizeof(data), &fin, NULL); 
             if (n > 0) {
-                printf("   ---> RX Stream %llu: %.*s\n", s, (int)n, data);
+                printf("   ---> RX Stream %lu: %.*s\n", (unsigned long)s, (int)n, data);
 
                 char response[4096];
                 int resp_len = snprintf(response, sizeof(response), "ECHO: %.*s", (int)n, data);
                 // Use c->conn
                 quiche_conn_stream_send(c->conn, s, (uint8_t*)response, resp_len, false, NULL); 
-                printf("   <--- TX Stream %llu: Echo response sent\n", s);
+                printf("   <--- TX Stream %lu: Echo response sent\n", (unsigned long)s);
             }
         }
         quiche_stream_iter_free(r);
