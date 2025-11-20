@@ -1,3 +1,5 @@
+// quiche_client.c
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,11 +10,54 @@
 #include <time.h>
 #include <sys/time.h>
 #include "quiche.h"
+#include <signal.h>
+#include <stdatomic.h>
 
 #define MAX_DATAGRAM_SIZE 1350
 
+atomic_bool ip_change_requested = false;
+int client_sock = -1;
+
+void sigint_handler(int sig) {
+    ip_change_requested = true;
+}
+
+void perform_ip_change_migration(quiche_conn* conn) {
+    printf("Simulating local IP change via Ctrl-C…\n");
+
+    // Create a new UDP socket with a new ephemeral port
+    int new_sock = socket(AF_INET, SOCK_DGRAM, 0);
+
+    struct sockaddr_in new_local;
+    memset(&new_local, 0, sizeof(new_local));
+    new_local.sin_family = AF_INET;
+    new_local.sin_addr.s_addr = htonl(INADDR_ANY);
+    new_local.sin_port = 0; // let OS pick a new port — simulates "new IP:port"
+
+    bind(new_sock, (struct sockaddr*)&new_local, sizeof(new_local));
+
+    // Tell quiche about the new source address
+    socklen_t sl = sizeof(new_local);
+
+    uint64_t seq;
+    int rc = quiche_conn_migrate_source(conn,
+        (struct sockaddr*)&new_local, sl, &seq);
+
+    if (rc != 0) {
+        fprintf(stderr, "migrate_source failed: %d\n", rc);
+        return;
+    }
+
+    printf("Migration requested (seq=%llu). Now sending on the new socket.\n",
+           (unsigned long long)seq);
+
+    // Update client state to use new_sock
+    client_sock = new_sock;
+}
+
 int main() {
     srand(time(NULL));
+    signal(SIGINT, sigint_handler);
 
     quiche_config *config = quiche_config_new(QUICHE_PROTOCOL_VERSION);
     if (!config) {
@@ -30,24 +75,24 @@ int main() {
     quiche_config_set_initial_max_stream_data_bidi_remote(config, 1000000);
     quiche_config_set_initial_max_streams_bidi(config, 100);
 
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) {
+    client_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (client_sock < 0) {
         perror("socket");
         return 1;
     }
-    fcntl(sock, F_SETFL, O_NONBLOCK);
+    fcntl(client_sock, F_SETFL, O_NONBLOCK);
 
     struct sockaddr_in local = {0}, peer = {0};
     local.sin_family = AF_INET;
     local.sin_addr.s_addr = INADDR_ANY;
     
-    if (bind(sock, (struct sockaddr *)&local, sizeof(local)) < 0) {
+    if (bind(client_sock, (struct sockaddr *)&local, sizeof(local)) < 0) {
         perror("bind");
         return 1;
     }
 
     socklen_t local_len = sizeof(local);
-    getsockname(sock, (struct sockaddr *)&local, &local_len);
+    getsockname(client_sock, (struct sockaddr *)&local, &local_len);
 
     peer.sin_family = AF_INET;
     peer.sin_port = htons(4433);
@@ -73,7 +118,7 @@ int main() {
 
     // Send initial handshake packets
     while ((sent = quiche_conn_send(conn, out, sizeof(out), &si)) > 0) {
-        sendto(sock, out, sent, 0, (struct sockaddr *)&peer, sizeof(peer));
+        sendto(client_sock, out, sent, 0, (struct sockaddr *)&peer, sizeof(peer));
         printf("Sent %zd bytes\n", sent);
     }
 
@@ -84,8 +129,14 @@ int main() {
     bool waiting_for_pong = false;
 
     while (!quiche_conn_is_closed(conn)) {
+        // Detect interrupt flag
+        if (ip_change_requested) {
+            ip_change_requested = false;
+            perform_ip_change_migration(conn);
+        }
+
         // Receive packets
-        ssize_t len = recvfrom(sock, buf, sizeof(buf), 0, NULL, NULL);
+        ssize_t len = recvfrom(client_sock, buf, sizeof(buf), 0, NULL, NULL);
         
         if (len > 0) {
             printf("Received %zd bytes\n", len);
@@ -102,7 +153,7 @@ int main() {
             
             // CRITICAL: Send response packets immediately after receiving
             while ((sent = quiche_conn_send(conn, out, sizeof(out), &si)) > 0) {
-                sendto(sock, out, sent, 0, (struct sockaddr *)&peer, sizeof(peer));
+                sendto(client_sock, out, sent, 0, (struct sockaddr *)&peer, sizeof(peer));
                 printf("Sent %zd bytes in response\n", sent);
             }
         } else if (len < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -166,7 +217,7 @@ int main() {
 
         // Always try to send pending packets (ACKs, etc)
         while ((sent = quiche_conn_send(conn, out, sizeof(out), &si)) > 0) {
-            sendto(sock, out, sent, 0, (struct sockaddr *)&peer, sizeof(peer));
+            sendto(client_sock, out, sent, 0, (struct sockaddr *)&peer, sizeof(peer));
         }
 
         usleep(1000);  // 1ms sleep
@@ -176,7 +227,7 @@ int main() {
 
     quiche_conn_free(conn);
     quiche_config_free(config);
-    close(sock);
+    close(client_sock);
     
     return 0;
 }

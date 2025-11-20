@@ -1,3 +1,5 @@
+// quiche_server.c
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +40,7 @@ int main() {
     quiche_config_set_initial_max_stream_data_bidi_remote(config, 1000000);
     quiche_config_set_initial_max_streams_bidi(config, 100);
     quiche_config_set_initial_max_streams_uni(config, 100);
+    quiche_config_set_disable_active_migration(config, false);
 
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
@@ -162,7 +165,8 @@ int main() {
             quiche_send_info si;
             ssize_t sent;
             while ((sent = quiche_conn_send(conn, out, sizeof(out), &si)) > 0) {
-                sendto(sock, out, sent, 0, (struct sockaddr *)&peer, peer_len);
+                sendto(sock, out, sent, 0, (struct sockaddr*)&si.to, si.to_len);
+
             }
             
             if (quiche_conn_is_closed(conn)) {
