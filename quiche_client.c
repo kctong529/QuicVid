@@ -74,8 +74,6 @@ void send_pending_packets(quiche_conn *conn, struct sockaddr_in *peer, socklen_t
 }
 
 void perform_ip_change_migration(quiche_conn* conn, struct sockaddr_in *local, struct sockaddr_in *peer) {
-    printf("Simulating local IP change via Ctrl-C…\n");
-
     struct sockaddr_in new_local = {0};
     int new_sock = setup_udp_socket(&new_local);
     if (new_sock < 0) {
@@ -163,6 +161,7 @@ int run_client(int argc, char *argv[]) {
     while (!quiche_conn_is_closed(conn)) {
         if (ip_change_requested) {
             ip_change_requested = false;
+            printf("Simulating local IP change via Ctrl-C…\n");
             perform_ip_change_migration(conn, &local, &peer);
         }
 
@@ -199,16 +198,24 @@ int run_client(int argc, char *argv[]) {
             }
 
             if (waiting_for_pong) {
-                uint8_t data[4096];
-                bool fin;
-                ssize_t n = quiche_conn_stream_recv(conn, stream_id, data, sizeof(data), &fin, NULL);
-                if (n > 0) {
-                    struct timeval now;
-                    gettimeofday(&now, NULL);
-                    long rtt_us = (now.tv_sec - ping_sent_time.tv_sec) * 1000000 +
-                                  (now.tv_usec - ping_sent_time.tv_usec);
-                    printf("Received: %.*s (RTT: %.2f ms)\n", (int)n, data, rtt_us / 1000.0);
+                struct timeval now;
+                gettimeofday(&now, NULL);
+
+                long rtt_us = (now.tv_sec - ping_sent_time.tv_sec) * 1000000 +
+                              (now.tv_usec - ping_sent_time.tv_usec);
+
+                if (rtt_us > 2000000) {
+                    printf("Pong timeout, try to detect migration\n");
                     waiting_for_pong = false;
+                    perform_ip_change_migration(conn, &local, &peer);
+                } else {
+                    uint8_t data[4096];
+                    bool fin;
+                    ssize_t n = quiche_conn_stream_recv(conn, stream_id, data, sizeof(data), &fin, NULL);
+                    if (n > 0) {
+                        printf("Received: %.*s (RTT: %.2f ms)\n", (int)n, data, rtt_us / 1000.0);
+                        waiting_for_pong = false;
+                    }
                 }
             }
         }
