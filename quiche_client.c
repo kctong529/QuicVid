@@ -100,8 +100,12 @@ void perform_ip_change_migration(quiche_conn* conn, struct sockaddr_in *local, s
 }
 
 /* -------------------- Main Client Loop -------------------- */
+int run_client(int argc, char *argv[]) {
+    const char *server_addr = "127.0.0.1";  // default
+    if (argc >= 2) {
+        server_addr = argv[1];
+    }
 
-int run_client(void) {
     srand(time(NULL));
     signal(SIGINT, sigint_handler);
 
@@ -123,12 +127,15 @@ int run_client(void) {
 
     peer.sin_family = AF_INET;
     peer.sin_port = htons(4433);
-    inet_pton(AF_INET, "127.0.0.1", &peer.sin_addr);
+    if (inet_pton(AF_INET, server_addr, &peer.sin_addr) != 1) {
+        fprintf(stderr, "Invalid server address: %s\n", server_addr);
+        return 1;
+    }
 
     uint8_t scid[QUICHE_MAX_CONN_ID_LEN];
     for (int i = 0; i < sizeof(scid); i++) scid[i] = rand() % 256;
 
-    quiche_conn *conn = quiche_connect("localhost", scid, sizeof(scid),
+    quiche_conn *conn = quiche_connect(server_addr, scid, sizeof(scid),
                                        (struct sockaddr *)&local, local_len,
                                        (struct sockaddr *)&peer, sizeof(peer),
                                        config);
@@ -217,6 +224,6 @@ int run_client(void) {
     return 0;
 }
 
-int main() {
-    return run_client();
+int main(int argc, char *argv[]) {
+    return run_client(argc, argv);
 }
