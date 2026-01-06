@@ -26,9 +26,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let y = i32::from_be_bytes(bytes[4..8].try_into().unwrap());
 
                         // CALIBRATED CENTERING:
-                        // Map -1000..1000 to 2..99 (X) and 2..35 (Y) to stay inside border
-                        let term_x = ((x + 1000) * 97 / 2000) + 2;
-                        let term_y = ((y + 1000) * 33 / 2000) + 2;
+                        // Map -500..500 to 2..99 (X) and 2..35 (Y) to stay inside border                    
+                        let term_x = ((x + 500) * 97 / 1000) + 2;
+                        let term_y = ((y + 500) * 33 / 1000) + 2;
 
                         // Ensure drawing stays within terminal bounds to prevent glitching
                         let safe_x = term_x.clamp(2, 99);
@@ -43,8 +43,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         last_pos = Some((safe_y, safe_x));
                         
                         // Status line on Row 38 (outside the box)
-                        print!("\x1b[38;1H\x1b[2K[QUIC] IP: {} | RTT: {:?} | Pos: {},{}", 
-                            connection.remote_address(), connection.stats().path.rtt, x, y);
+                        print!("\x1b[38;1H\x1b[2K[QUIC ID: {:?}] IP: {} | RTT: {:?} | Pos: {},{}", 
+                            connection.stable_id(),
+                            connection.remote_address(), 
+                            connection.stats().path.rtt, 
+                            x, y
+                        );
+                        
                         std::io::stdout().flush().unwrap();
                     }
                     Err(_) => break,
