@@ -1,5 +1,6 @@
 use quinn::{Endpoint, ServerConfig};
 use std::{error::Error, sync::Arc};
+use std::io::Write;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -15,6 +16,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     while let Some(conn) = endpoint.accept().await {
         tokio::spawn(async move {
             let connection = conn.await.unwrap();
+            let mut last_pos: Option<(i32, i32)> = None;
 
             loop {
                 match connection.read_datagram().await {
@@ -23,24 +25,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let x = i32::from_be_bytes(bytes[0..4].try_into().unwrap());
                         let y = i32::from_be_bytes(bytes[4..8].try_into().unwrap());
 
-                        // Scale -1000..1000 to roughly 80x24 terminal space
-                        // 1000 / 25 = 40 (center of 80 chars width)
-                        // 1000 / 80 = 12 (center of 24 chars height)
-                        let term_x = (x / 25) + 40;
-                        let term_y = (y / 80) + 12;
+                        // Scale -1000..1000 to roughly 100x36 terminal space
+                        // We map -1000..1000 to 1..100 (X) and 1..36 (Y)
+                        let term_x = (x / 20) + 50;  // Center is 50
+                        let term_y = (y / 55) + 18;  // Center is 18
 
                         // Ensure drawing stays within terminal bounds to prevent glitching
-                        let safe_x = term_x.clamp(1, 80);
-                        let safe_y = term_y.clamp(1, 24);
+                        let safe_x = term_x.clamp(1, 100);
+                        let safe_y = term_y.clamp(1, 36);
 
-                        // Move cursor and draw
+                        // Erase the PREVIOUS position
+                        if let Some((old_y, old_x)) = last_pos {
+                            print!("{}[{};{}H ", 27 as char, old_y, old_x);
+                        }
+
+                        // Draw current position
                         print!("{}[{};{}H↖", 27 as char, safe_y, safe_x);
+
+                        // Update tracker
+                        last_pos = Some((safe_y, safe_x));
                         
                         // Status line
-                        print!("{}[24;1H{}[2KPos: {:>4},{:>4} | RTT: {:?}", 
-                            27 as char, 27 as char, x, y, connection.stats().path.rtt);                        
-                        use std::io::{self, Write};
-                        io::stdout().flush().unwrap();
+                        print!("{}[37;1H{}[2KPos: {:>4},{:>4} | IP: {} | RTT: {:?}",
+                            27 as char, 27 as char, x, y, 
+                            connection.remote_address(),
+                            connection.stats().path.rtt
+                        );
+                        std::io::stdout().flush().unwrap();
                     }
                     Err(_) => break,
                 }
