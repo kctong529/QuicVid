@@ -22,24 +22,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         if bytes.len() < 8 { continue; }
                         let x = i32::from_be_bytes(bytes[0..4].try_into().unwrap());
                         let y = i32::from_be_bytes(bytes[4..8].try_into().unwrap());
-                        
-                        // Normalize coordinates to terminal size (roughly 80x24)
-                        // Assuming input is -100 to 100, map to terminal center
-                        let term_x = (x / 4) + 40;
-                        let term_y = (y / 8) + 12;
 
-                        // 1. Clear previous status line and dot (optional: clear whole screen for smoothness)
-                        // 2. Move to new X/Y
-                        // 3. Print a cursor-like character
-                        print!("{}[2J{}[{};{}Hcursor -> ↖", 27 as char, 27 as char, term_y, term_x);
+                        // Scale -1000..1000 to roughly 80x24 terminal space
+                        // 1000 / 25 = 40 (center of 80 chars width)
+                        // 1000 / 80 = 12 (center of 24 chars height)
+                        let term_x = (x / 25) + 40;
+                        let term_y = (y / 80) + 12;
 
-                        // Status bar at the bottom
-                        print!("{}[24;1H{}[2KPath: {} | RTT: {:?}", 
-                            27 as char, 27 as char,
-                            connection.remote_address(), 
-                            connection.stats().path.rtt
-                        );
+                        // Ensure drawing stays within terminal bounds to prevent glitching
+                        let safe_x = term_x.clamp(1, 80);
+                        let safe_y = term_y.clamp(1, 24);
+
+                        // Move cursor and draw
+                        print!("{}[{};{}H↖", 27 as char, safe_y, safe_x);
                         
+                        // Status line
+                        print!("{}[24;1H{}[2KPos: {:>4},{:>4} | RTT: {:?}", 
+                            27 as char, 27 as char, x, y, connection.stats().path.rtt);                        
                         use std::io::{self, Write};
                         io::stdout().flush().unwrap();
                     }

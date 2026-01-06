@@ -44,8 +44,9 @@ async fn main() -> anyhow::Result<()> {
     let mut cur_y: i32 = 0;
     println!("Streaming REAL mouse data. Move your mouse!");
 
-    for i in 1..100 {
-        sleep(Duration::from_millis(100)).await; // 10Hz updates
+    for i in 1..2000 {
+        // 60Hz update rate for smooth tracking
+        sleep(Duration::from_millis(16)).await;
 
         // Read 3 bytes from the mouse device
         mouse_dev.read_exact(&mut mouse_data)?;
@@ -59,16 +60,17 @@ async fn main() -> anyhow::Result<()> {
         cur_x += dx;
         cur_y -= dy; // Invert Y because screen coordinates go down
 
-        // Clamp coordinates to keep the visualizer from breaking (e.g., -100 to 100)
-        cur_x = cur_x.clamp(-100, 100);
-        cur_y = cur_y.clamp(-100, 100);
+        // Clamp coordinates to keep the visualizer from breaking
+        cur_x = cur_x.clamp(-1000, 1000);
+        cur_y = cur_y.clamp(-1000, 1000);
 
         // Pack data into 8 bytes: [x: i32 (4b)][y: i32 (4b)]
         let mut packet = [0u8; 8];
         packet[0..4].copy_from_slice(&cur_x.to_be_bytes());
         packet[4..8].copy_from_slice(&cur_y.to_be_bytes());
-
-        if i % 10 == 0 {
+        
+        // Migrate every 100 packets (~1.6 seconds)
+        if i % 100 == 0 {
             println!("\n--- MIGRATING PORT ---");
             let new_socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
             new_socket.set_nonblocking(true)?;
