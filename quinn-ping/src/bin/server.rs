@@ -7,14 +7,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .expect("Failed to install crypto provider");
 
     let (server_config, _) = configure_server()?;
-    let addr = "127.0.0.1:4433".parse()?;
+    let addr = "0.0.0.0:4433".parse()?; // Listens on all interfaces
     let endpoint = Endpoint::server(server_config, addr)?;
-    println!("Server listening on {}", addr);
+    println!("Server listening on 0.0.0.0:4433 (Mininet h1)");
 
     while let Some(conn) = endpoint.accept().await {
         tokio::spawn(async move {
             let connection = conn.await.unwrap();
-            // Accept the bidirectional stream from the client
+            
             let (mut send, mut recv) = connection.accept_bi().await.unwrap();
             println!("Client connected. Starting ping-pong loop...");
 
@@ -23,8 +23,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if recv.read_exact(&mut buf).await.is_err() { break; }
                 println!("Received {} | CID: {:?} | From: {}", 
                     String::from_utf8_lossy(&buf), 
-                    connection.stable_id(), // This ID stays constant
-                    connection.remote_address() // This changes at Round 5
+                    connection.stable_id(),
+                    connection.remote_address()
                 );
                 send.write_all(b"PONG").await.unwrap();
             }

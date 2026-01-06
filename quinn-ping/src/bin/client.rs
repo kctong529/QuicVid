@@ -7,26 +7,24 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 1. Initialize Crypto Provider
     rustls::crypto::ring::default_provider().install_default()
         .expect("Failed to install crypto provider");
 
-    // 2. Build the Rustls config
     let mut rustls_config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
         .with_no_client_auth();
     
-    // IMPORTANT: QUIC requires ALPN to be set
-    rustls_config.alpn_protocols = vec![b"hq-29".to_vec()]; // Standard for HTTP 0.9/Testing
+    rustls_config.alpn_protocols = vec![b"hq-29".to_vec()];
 
-    // 3. Wrap it for Quinn (This fixes error E0277)
     let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_config)?;
+
+    // Bind to 0.0.0.0:0 so the OS chooses the best interface (h2-eth0)
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
     endpoint.set_default_client_config(ClientConfig::new(Arc::new(quic_config)));
-
-    let remote = "127.0.0.1:4433".parse()?;
-    println!("Connecting to {}...", remote);
+    
+    let remote = "10.0.0.1:4433".parse()?; // Target h1
+    println!("Connecting to h1 ({}) from h2...", remote);
     
     let conn = endpoint.connect(remote, "localhost")?.await?;
     let (mut send, mut recv) = conn.open_bi().await?;
