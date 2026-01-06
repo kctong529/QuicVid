@@ -1,39 +1,39 @@
 use quinn::{Endpoint, ServerConfig};
-use std::{error::Error, net::SocketAddr, sync::Arc};
-
+use std::{error::Error, sync::Arc};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    rustls::crypto::ring::default_provider().install_default()
-        .expect("Failed to install crypto provider");
+    rustls::crypto::ring::default_provider().install_default().ok();
 
     let (server_config, _) = configure_server()?;
-    let addr = "0.0.0.0:4433".parse()?; // Listens on all interfaces
+    let addr = "0.0.0.0:4433".parse()?; 
     let endpoint = Endpoint::server(server_config, addr)?;
     println!("Server listening on 0.0.0.0:4433 (Mininet h1)");
 
     while let Some(conn) = endpoint.accept().await {
         tokio::spawn(async move {
             let connection = conn.await.unwrap();
-
-            let (mut send, mut recv) = connection.accept_bi().await.unwrap();
-            println!("Tracking client: {:?}", connection.stable_id());
-
-            let mut buf = [0u8; 8]; // Buffer for x and y
+            println!("[Session {:?}] Client connected from {}", connection.stable_id(), connection.remote_address());
 
             loop {
-                if recv.read_exact(&mut buf).await.is_err() { break; }
-                
-                // Decode coordinates
-                let x = i32::from_be_bytes(buf[0..4].try_into().unwrap());
-                let y = i32::from_be_bytes(buf[4..8].try_into().unwrap());
+                // Receive the raw datagram (Low latency, unreliable)
+                match connection.read_datagram().await {
+                    Ok(bytes) => {
+                        if bytes.len() < 8 { continue; }
+                        let x = i32::from_be_bytes(bytes[0..4].try_into().unwrap());
+                        let y = i32::from_be_bytes(bytes[4..8].try_into().unwrap());
 
-                println!(
-                    "ID: {:?} | MOUSE: X:{:>4} Y:{:>4} | FROM: {}", 
-                    connection.stable_id(), x, y, connection.remote_address()
-                );
-
-                // Send 1-byte ACK
-                send.write_all(&[1]).await.unwrap();
+                        println!(
+                            "ID: {:?} | MOUSE: X:{:>4} Y:{:>4} | FROM: {} | RTT: {:?}", 
+                            connection.stable_id(), x, y, 
+                            connection.remote_address(),
+                            connection.stats().path.rtt
+                        );
+                    }
+                    Err(_) => {
+                        println!("Connection closed.");
+                        break;
+                    }
+                }
             }
         });
     }
@@ -51,7 +51,11 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     
     server_crypto.alpn_protocols = vec![b"hq-29".to_vec()];
 
-    let server_config = ServerConfig::with_crypto(Arc::new(quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)?));
+    let mut transport_config = quinn::TransportConfig::default();
+    transport_config.datagram_receive_buffer_size(Some(64 * 1024)); // 64 KB buffer
+
+    let mut server_config = ServerConfig::with_crypto(Arc::new(quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)?));
+    server_config.transport_config(Arc::new(transport_config));
     
     Ok((server_config, cert_der))
 }

@@ -4,7 +4,6 @@ use tokio::time::sleep;
 use rustls::client::danger::{ServerCertVerifier, HandshakeSignatureValid, ServerCertVerified};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
-use std::time::Instant;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -22,13 +21,19 @@ async fn main() -> anyhow::Result<()> {
 
     // Bind to 0.0.0.0:0 so the OS chooses the best interface (h2-eth0)
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
-    endpoint.set_default_client_config(ClientConfig::new(Arc::new(quic_config)));
+    let mut client_config = ClientConfig::new(Arc::new(quic_config));
+
+    // Allow the client to send datagrams
+    let mut transport = quinn::TransportConfig::default();
+    transport.datagram_receive_buffer_size(Some(64 * 1024)); 
+    client_config.transport_config(Arc::new(transport));
+
+    endpoint.set_default_client_config(client_config);
     
     let remote = "10.0.0.1:4433".parse()?; // Target h1
     println!("Connecting to h1 ({}) from h2...", remote);
     
     let conn = endpoint.connect(remote, "localhost")?.await?;
-    let (mut send, mut recv) = conn.open_bi().await?;
 
     for i in 1..100 {
         sleep(Duration::from_millis(100)).await; // 10Hz updates
@@ -50,13 +55,9 @@ async fn main() -> anyhow::Result<()> {
             endpoint.rebind(new_socket)?;
         }
 
-        let start = Instant::now();
-        send.write_all(&packet).await?;
-        
-        // Server acknowledges receipt
-        let mut ack = [0u8; 1];
-        recv.read_exact(&mut ack).await?;
-        
+        // Sending the datagram directly via the connection
+        conn.send_datagram(packet.to_vec().into())?;
+
         let stats = conn.stats();
         println!(
             "Pkt {:03} | Pos: ({:>4}, {:>4}) | RTT: {:?} | Path: {}", 
