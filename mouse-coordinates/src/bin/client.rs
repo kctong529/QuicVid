@@ -62,11 +62,11 @@ async fn main() -> anyhow::Result<()> {
         // Clamp coordinates to keep the visualizer from breaking (e.g., -100 to 100)
         cur_x = cur_x.clamp(-100, 100);
         cur_y = cur_y.clamp(-100, 100);
-        
+
         // Pack data into 8 bytes: [x: i32 (4b)][y: i32 (4b)]
         let mut packet = [0u8; 8];
-        packet[0..4].copy_from_slice(&x.to_be_bytes());
-        packet[4..8].copy_from_slice(&y.to_be_bytes());
+        packet[0..4].copy_from_slice(&cur_x.to_be_bytes());
+        packet[4..8].copy_from_slice(&cur_y.to_be_bytes());
 
         if i % 10 == 0 {
             println!("\n--- MIGRATING PORT ---");
@@ -80,8 +80,8 @@ async fn main() -> anyhow::Result<()> {
 
         let stats = conn.stats();
         println!(
-            "Pkt {:03} | Pos: ({:>4}, {:>4}) | RTT: {:?}", 
-            i, x, y, stats.path.rtt
+            "Pkt {:03} | Pos: ({:>4}, {:>4}) | RTT: {:?}",
+            i, cur_x, cur_y, stats.path.rtt
         );
     }
 
