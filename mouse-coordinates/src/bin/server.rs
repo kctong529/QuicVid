@@ -1,5 +1,6 @@
 use quinn::{Endpoint, ServerConfig};
 use std::{error::Error, sync::Arc};
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     rustls::crypto::ring::default_provider().install_default().ok();
@@ -7,32 +8,41 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (server_config, _) = configure_server()?;
     let addr = "0.0.0.0:4433".parse()?; 
     let endpoint = Endpoint::server(server_config, addr)?;
-    println!("Server listening on 0.0.0.0:4433 (Mininet h1)");
+
+    // Clear screen and hide cursor
+    print!("{}[2J{}[?25l", 27 as char, 27 as char);
 
     while let Some(conn) = endpoint.accept().await {
         tokio::spawn(async move {
             let connection = conn.await.unwrap();
-            println!("[Session {:?}] Client connected from {}", connection.stable_id(), connection.remote_address());
 
             loop {
-                // Receive the raw datagram (Low latency, unreliable)
                 match connection.read_datagram().await {
                     Ok(bytes) => {
                         if bytes.len() < 8 { continue; }
                         let x = i32::from_be_bytes(bytes[0..4].try_into().unwrap());
                         let y = i32::from_be_bytes(bytes[4..8].try_into().unwrap());
+                        
+                        // Normalize coordinates to terminal size (roughly 80x24)
+                        // Assuming input is -100 to 100, map to terminal center
+                        let term_x = (x / 4) + 40;
+                        let term_y = (y / 8) + 12;
 
-                        println!(
-                            "ID: {:?} | MOUSE: X:{:>4} Y:{:>4} | FROM: {} | RTT: {:?}", 
-                            connection.stable_id(), x, y, 
-                            connection.remote_address(),
+                        // Draw logic:
+                        // 1. Save cursor, 2. Move to pos, 3. Print dot, 4. Restore cursor
+                        print!("{}[s{}[{};{}H●{}[u", 27 as char, 27 as char, term_y, term_x, 27 as char);
+                        
+                        // Status bar at the bottom
+                        print!("{}[24;1H{}[2KPath: {} | RTT: {:?}", 
+                            27 as char, 27 as char,
+                            connection.remote_address(), 
                             connection.stats().path.rtt
                         );
+                        
+                        use std::io::{self, Write};
+                        io::stdout().flush().unwrap();
                     }
-                    Err(_) => {
-                        println!("Connection closed.");
-                        break;
-                    }
+                    Err(_) => break,
                 }
             }
         });
