@@ -34,15 +34,29 @@ async fn main() -> anyhow::Result<()> {
         sleep(Duration::from_secs(1)).await;
         
         if i % 5 == 0 {
-            println!("\n--- MIGRATING TO NEW PORT ---");
+            println!("\n--- ACTIVE MIGRATION TRIGGERED ---");
             let new_socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
             new_socket.set_nonblocking(true)?;
             endpoint.rebind(new_socket)?;
         }
 
+        // Capture time before sending
+        let start = std::time::Instant::now();
         send.write_all(b"PING").await?;
         recv.read_exact(&mut buf).await?;
-        println!("Round {}: Received {} from server", i, String::from_utf8_lossy(&buf));
+        let duration = start.elapsed();
+
+        // Get QUIC internal stats
+        let stats = conn.stats();
+
+        println!(
+            "Round {:02} | RTT: {:?} | App-Latency: {:?} | Path: {} -> {}", 
+            i, 
+            stats.path.rtt,           // Internal QUIC RTT estimation
+            duration,                 // Time for a full Ping-Pong at app level
+            conn.local_ip().map(|ip| ip.to_string()).unwrap_or_else(|| "??".into()),
+            conn.remote_address()
+        );
     }
 
     Ok(())

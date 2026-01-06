@@ -14,18 +14,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     while let Some(conn) = endpoint.accept().await {
         tokio::spawn(async move {
             let connection = conn.await.unwrap();
-            
+
             let (mut send, mut recv) = connection.accept_bi().await.unwrap();
-            println!("Client connected. Starting ping-pong loop...");
+            
+            // Generate a short ID for cleaner logs
+            let stable_id = connection.stable_id();
+            println!("[Session {:?}] Client connected from {}", stable_id, connection.remote_address());
 
             let mut buf = [0u8; 4];
             loop {
-                if recv.read_exact(&mut buf).await.is_err() { break; }
-                println!("Received {} | CID: {:?} | From: {}", 
+                if recv.read_exact(&mut buf).await.is_err() { 
+                    println!("[Session {:?}] Client disconnected.", stable_id);
+                    break; 
+                }
+                
+                println!(
+                    "REQ: {} | CID: {:?} | FROM: {} | RTT: {:?}", 
                     String::from_utf8_lossy(&buf), 
-                    connection.stable_id(),
-                    connection.remote_address()
+                    stable_id,
+                    connection.remote_address(),
+                    connection.stats().path.rtt // The server's view of RTT
                 );
+
                 send.write_all(b"PONG").await.unwrap();
             }
         });
@@ -42,10 +52,8 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
         .with_no_client_auth()
         .with_single_cert(vec![cert_der.clone().into()], priv_key.into())?;
     
-    // THIS IS THE FIX: The server must match the client's ALPN
     server_crypto.alpn_protocols = vec![b"hq-29".to_vec()];
 
-    // Wrap for Quinn
     let server_config = ServerConfig::with_crypto(Arc::new(quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)?));
     
     Ok((server_config, cert_der))
