@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
         packet[0..4].copy_from_slice(&x.to_be_bytes());
         packet[4..8].copy_from_slice(&y.to_be_bytes());
 
-        if i == 10 {
+        if i % 10 == 0 {
             println!("\n--- MIGRATING PORT ---");
             let new_socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
             new_socket.set_nonblocking(true)?;
@@ -60,9 +60,8 @@ async fn main() -> anyhow::Result<()> {
 
         let stats = conn.stats();
         println!(
-            "Pkt {:03} | Pos: ({:>4}, {:>4}) | RTT: {:?} | Path: {}", 
-            i, x, y, stats.path.rtt, 
-            conn.local_ip().map(|ip| ip.to_string()).unwrap_or_default()
+            "Pkt {:03} | Pos: ({:>4}, {:>4}) | RTT: {:?}", 
+            i, x, y, stats.path.rtt
         );
     }
 
