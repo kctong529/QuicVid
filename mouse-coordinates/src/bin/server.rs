@@ -28,10 +28,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let term_x = (x / 4) + 40;
                         let term_y = (y / 8) + 12;
 
-                        // Draw logic:
-                        // 1. Save cursor, 2. Move to pos, 3. Print dot, 4. Restore cursor
-                        print!("{}[s{}[{};{}H●{}[u", 27 as char, 27 as char, term_y, term_x, 27 as char);
-                        
+                        // 1. Clear previous status line and dot (optional: clear whole screen for smoothness)
+                        // 2. Move to new X/Y
+                        // 3. Print a cursor-like character
+                        print!("{}[2J{}[{};{}Hcursor -> ↖", 27 as char, 27 as char, term_y, term_x);
+
                         // Status bar at the bottom
                         print!("{}[24;1H{}[2KPath: {} | RTT: {:?}", 
                             27 as char, 27 as char,

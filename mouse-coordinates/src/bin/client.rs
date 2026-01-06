@@ -4,6 +4,8 @@ use tokio::time::sleep;
 use rustls::client::danger::{ServerCertVerifier, HandshakeSignatureValid, ServerCertVerified};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
+use std::fs::File;
+use std::io::Read;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -35,14 +37,32 @@ async fn main() -> anyhow::Result<()> {
     
     let conn = endpoint.connect(remote, "localhost")?.await?;
 
+    let mut mouse_dev = File::open("/dev/input/mice").expect("Could not open mouse device - try running with sudo");
+    let mut mouse_data = [0u8; 3]; // Standard PS/2 mouse packet is 3 bytes
+    
+    let mut cur_x: i32 = 0;
+    let mut cur_y: i32 = 0;
+    println!("Streaming REAL mouse data. Move your mouse!");
+
     for i in 1..100 {
         sleep(Duration::from_millis(100)).await; // 10Hz updates
 
-        // Simulate mouse movement: a circle pattern
-        let angle = i as f32 * 0.1;
-        let x = (angle.cos() * 100.0) as i32;
-        let y = (angle.sin() * 100.0) as i32;
+        // Read 3 bytes from the mouse device
+        mouse_dev.read_exact(&mut mouse_data)?;
 
+        // Byte 1: Buttons and signs
+        // Byte 2: Relative X movement
+        // Byte 3: Relative Y movement
+        let dx = mouse_data[1] as i8 as i32;
+        let dy = mouse_data[2] as i8 as i32;
+
+        cur_x += dx;
+        cur_y -= dy; // Invert Y because screen coordinates go down
+
+        // Clamp coordinates to keep the visualizer from breaking (e.g., -100 to 100)
+        cur_x = cur_x.clamp(-100, 100);
+        cur_y = cur_y.clamp(-100, 100);
+        
         // Pack data into 8 bytes: [x: i32 (4b)][y: i32 (4b)]
         let mut packet = [0u8; 8];
         packet[0..4].copy_from_slice(&x.to_be_bytes());
