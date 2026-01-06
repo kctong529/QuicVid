@@ -1,6 +1,5 @@
 use quinn::{Endpoint, ServerConfig};
-use std::{error::Error, sync::Arc};
-use std::io::Write;
+use std::{error::Error, sync::Arc, io::Write};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -10,8 +9,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let addr = "0.0.0.0:4433".parse()?; 
     let endpoint = Endpoint::server(server_config, addr)?;
 
-    // Clear screen and hide cursor
-    print!("{}[2J{}[?25l", 27 as char, 27 as char);
+    // Clear screen and draw the 100x36 boundary box
+    print!("\x1b[2J\x1b[H"); // Clear and Home
+    draw_boundary(100, 36);
 
     while let Some(conn) = endpoint.accept().await {
         tokio::spawn(async move {
@@ -25,32 +25,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let x = i32::from_be_bytes(bytes[0..4].try_into().unwrap());
                         let y = i32::from_be_bytes(bytes[4..8].try_into().unwrap());
 
-                        // Scale -1000..1000 to roughly 100x36 terminal space
-                        // We map -1000..1000 to 1..100 (X) and 1..36 (Y)
-                        let term_x = (x / 20) + 50;  // Center is 50
-                        let term_y = (y / 55) + 18;  // Center is 18
+                        // CALIBRATED CENTERING:
+                        // Map -1000..1000 to 2..99 (X) and 2..35 (Y) to stay inside border
+                        let term_x = ((x + 1000) * 97 / 2000) + 2;
+                        let term_y = ((y + 1000) * 33 / 2000) + 2;
 
                         // Ensure drawing stays within terminal bounds to prevent glitching
-                        let safe_x = term_x.clamp(1, 100);
-                        let safe_y = term_y.clamp(1, 36);
+                        let safe_x = term_x.clamp(2, 99);
+                        let safe_y = term_y.clamp(2, 35);
 
                         // Erase the PREVIOUS position
                         if let Some((old_y, old_x)) = last_pos {
-                            print!("{}[{};{}H ", 27 as char, old_y, old_x);
+                            print!("\x1b[{};{}H ", old_y, old_x);
                         }
 
-                        // Draw current position
-                        print!("{}[{};{}H↖", 27 as char, safe_y, safe_x);
-
-                        // Update tracker
+                        print!("\x1b[{};{}H↖", safe_y, safe_x);
                         last_pos = Some((safe_y, safe_x));
                         
-                        // Status line
-                        print!("{}[37;1H{}[2KPos: {:>4},{:>4} | IP: {} | RTT: {:?}",
-                            27 as char, 27 as char, x, y, 
-                            connection.remote_address(),
-                            connection.stats().path.rtt
-                        );
+                        // Status line on Row 38 (outside the box)
+                        print!("\x1b[38;1H\x1b[2K[QUIC] IP: {} | RTT: {:?} | Pos: {},{}", 
+                            connection.remote_address(), connection.stats().path.rtt, x, y);
                         std::io::stdout().flush().unwrap();
                     }
                     Err(_) => break,
@@ -79,4 +73,21 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     server_config.transport_config(Arc::new(transport_config));
     
     Ok((server_config, cert_der))
+}
+
+fn draw_boundary(width: i32, height: i32) {
+    // Top border
+    print!("\x1b[1;1H+");
+    print!("{}", "-".repeat((width - 2) as usize));
+    print!("+");
+    // Sides
+    for y in 2..height {
+        print!("\x1b[{};1H|", y);
+        print!("\x1b[{};{}H|", y, width);
+    }
+    // Bottom border
+    print!("\x1b[{};1H+", height);
+    print!("{}", "-".repeat((width - 2) as usize));
+    print!("+");
+    std::io::stdout().flush().unwrap();
 }
