@@ -1,2 +1,48 @@
+# macOS / archive metadata
 .DS_Store
-quiche
+.AppleDouble
+.LSOverride
+__MACOSX/
+
+# Rust build output
+target/
+**/target/
+
+# C/C++ / CMake build output
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# Local binaries from old experiments
+debug_client
+quiche_client
+quiche_server
+quic_migration_demo
+quic_server
+
+# Local certificates and keys
+cert.pem
+key.pem
+*.pem
+
+# Logs and temporary runtime output
+logs/
+tmp/
+*.log
+*.out
+
+# Mininet / experiment output
+*.pcap
+*.csv.tmp
+
+# Editor / local environment
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local external dependency checkouts
+/quiche/
+/external/quiche/
