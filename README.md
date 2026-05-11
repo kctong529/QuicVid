@@ -11,7 +11,7 @@ This project asks a concrete engineering question:
 The scope is therefore not “build a production Zoom replacement.” The scope is a focused product prototype with a clear demonstration:
 
 1. run a video-call app as separate client and server instances;
-2. send live or repeatable video frames over Quinn/QUIC;
+2. first send repeatable fake video frames over Quinn/QUIC datagrams, then add real video if the core migration path is stable;
 3. trigger client-side migration while the call is active;
 4. show that the QUIC session remains the same application call when migration succeeds;
 5. compare the result with a simple non-migrating baseline;
@@ -162,7 +162,7 @@ The server app:
 The client app:
 
 - connects to the server;
-- captures local camera video;
+- generates fake video frames first, and later captures camera or test-pattern frames;
 - sends video over QUIC datagrams;
 - handles reliable control messages;
 - triggers migration during the robustness demo;
@@ -171,7 +171,7 @@ The client app:
 
 ## Execution modes
 
-The project should support three execution modes.
+The project should support four execution modes.
 
 ### 1. Local two-process mode
 
@@ -180,8 +180,8 @@ Both server and client run on the same machine.
 Example target commands:
 
 ```bash
-cargo run --bin quicvid -- --mode server --listen 127.0.0.1:4433
-cargo run --bin quicvid -- --mode client --connect 127.0.0.1:4433
+cargo run --bin quic-vid -- server --listen 127.0.0.1:4433
+cargo run --bin quic-vid -- client --connect 127.0.0.1:4433
 ```
 
 Purpose:
@@ -430,18 +430,16 @@ QuicVid
 
 ## Current next steps
 
-1. Update the repository to clearly mark Quinn as the active path.
-2. Mark quiche work as legacy.
-3. Create a main app crate that supports `--mode server` and `--mode client`.
-4. Add local two-process connection mode.
-5. Add local camera preview.
-6. Send test-pattern frames over Quinn datagrams.
-7. Send camera frames over Quinn datagrams.
-8. Display received frames in the server UI.
-9. Add migration trigger during active video.
-10. Add a simple baseline video transport.
-11. Add comparison logs and demo scripts.
-12. Add Mininet evaluation if time allows.
+1. Finish Epic 1.1 recovery docs and cleanup.
+2. Create the main `quic-vid` app crate.
+3. Add server/client CLI modes.
+4. Add Quinn server/client setup.
+5. Send an initial client hello over a QUIC stream.
+6. Add session ID generation.
+7. Add structured JSONL logging.
+8. Add fake video frame format and generator.
+9. Send numbered fake frames over QUIC datagrams.
+10. Add frame receive tracking and summaries.
 
 ## Suggested final claim
 
