@@ -1,914 +1,794 @@
-# Updated Project Plan
+# QuicVid Project Plan
+
+## Week-by-week epic assignment
+
+This table reflects the current four-week execution focus. Since Week 1 was mostly spent on Epic 1.1, the heavier implementation work is shifted into Weeks 2-4. The weeks are planning buckets rather than strict deadlines: unfinished P0 work should carry forward before starting lower-priority work.
+
+| Week | Main focus | Epics | Target outcome |
+|---|---|---|---|
+| Week 1 | Project recovery and scope alignment | Epic 1.1 — Recover project state and align QuicVid around Quinn | The repository direction is clarified: Quinn is the active path, quiche is legacy/background, current prototypes are documented, and the plan is aligned around a fake-video-first baseline. |
+| Week 2 | Main app skeleton and first fake-video stream | Epic 1.2 — Build the initial QuicVid client/server app skeleton<br>Start Epic 1.3 — Stream fake video frames over Quinn datagrams | The new `quic-vid` app runs as client/server, exchanges a control message, writes structured logs, and begins sending numbered fake frames over QUIC datagrams. |
+| Week 3 | Complete fake-video baseline and manual migration | Finish Epic 1.3 — Stream fake video frames over Quinn datagrams<br>Epic 2.1 — Demonstrate manual QUIC migration during fake video streaming | The app has a measurable fake-video workload with frame IDs, receive gaps, missing/out-of-order detection, and a manual migration demo during active fake-video streaming. |
+| Week 4 | Migration controller, automatic strategy, and evidence packaging | Epic 2.2 — Add migration controller subsystem<br>Start/simplify Epic 2.3 — Implement automatic migration strategy for fake video<br>Epic 4.1/4.3 essentials — logging analysis and final demo docs | Migration is routed through a clear controller, a simple automatic trigger works if time allows, core logs/results are summarized, and the final demo/release path is documented. |
+
+Stretch work after the P0 path is stable:
+
+```text
+Epic 3.4 — baseline transport comparison
+Epic 3.1/3.2/3.3 — real-video path
+Epic 4.2 — physical WiFi-to-WiFi demo
+Optional — bidirectional video and audio
+```
+
+Priority rule:
+
+```text
+P0 fake-video migration evidence first
+P1 real-video, baseline comparison, and physical WiFi demo second
+P2 bidirectional video and audio only as future work
+```
 
 ## 1. Project definition
 
-QuicVid is a **Quinn-based desktop video-call prototype** designed to demonstrate robust call continuity during controlled network changes.
+QuicVid is a **Quinn-based video-call prototype** for exploring how QUIC connection migration can preserve a long-lived real-time media session across controlled network changes.
 
-The engineering problem is that a video-call application is a long-lived interactive session, but the underlying transport connection often depends on the client's current network address and port. If the client changes network path, loses and regains connectivity, or receives a new NAT binding, the application may experience a frozen video, a dropped call, or a full reconnect. The user still thinks they are in the same call, but the transport may no longer recognize the peer as the same endpoint.
+The engineering problem is that a video call is perceived by the user as one continuous session, but the transport path underneath it may change. When a device switches WiFi networks, changes interface, receives a new IP address, or gets a new UDP port/NAT binding, a traditional transport session may break or require the application to reconnect. QuicVid investigates whether QUIC migration can reduce that disruption while preserving the same logical call session.
 
 The concrete project question is:
 
-> Can a desktop video-call prototype use QUIC connection migration to keep the same active media session alive across a controlled client-side address/path change, with less visible disruption than a simple baseline that lacks QUIC migration support?
+> Can a Quinn-based video-call prototype preserve the same active media session across controlled client-side address or path changes, with less application-visible disruption than a simple reconnect-style baseline?
 
-The main deliverable is therefore neither a generic video app nor a standalone QUIC experiment. The final project must combine both:
+The project is not a generic video app and not only a QUIC experiment. The intended final artifact is:
 
-> A runnable video-call prototype that sends media over Quinn/QUIC, triggers migration during an active call, preserves the same application session when migration succeeds, and compares the disruption against a simple non-migrating or reconnect-based baseline.
+> A runnable QuicVid prototype that sends media-like traffic over Quinn/QUIC, triggers migration during an active session, records disruption, and compares QUIC migration against a simple baseline using the same workload.
 
-### 1.1 Concrete scope of achievement
+## 2. Concrete scope of achievement
 
-The project is successful when it can demonstrate this sequence reliably:
+The project should aim to demonstrate this sequence:
 
-1. start a server app instance;
-2. start a client app instance;
-3. establish a Quinn connection and call session;
-4. send live or repeatable video frames from client to server;
-5. display the received video;
-6. trigger client-side migration while video is flowing;
-7. show that the QUIC connection remains the same logical call when migration succeeds;
-8. record frame disruption and peer address/port changes;
-9. run a comparable baseline where the same disruption causes reconnect, a new session, or larger visible interruption.
+1. start a server instance;
+2. start a client instance;
+3. establish a Quinn connection and logical call session;
+4. send repeatable fake video frames over QUIC datagrams;
+5. measure frame delivery with frame IDs, receive gaps, missing frames, and out-of-order frames;
+6. trigger migration during active fake-video streaming;
+7. preserve the same logical session when migration succeeds;
+8. add an automatic migration decision based on media degradation;
+9. compare the result against a simple baseline using the same workload;
+10. optionally add real visual video and a physical WiFi-to-WiFi demo if the core path is stable.
 
-### 1.2 What the project does not try to solve
+The most important design decision is:
 
-The project does not aim to build a production video-conferencing system. The following are out of scope unless the core demo is already complete:
+> Build and evaluate fake numbered video frames first. Add real video only after the fake-video migration path is working.
+
+Fake frames make the project measurable earlier. They also avoid letting camera APIs, GUI rendering, compression, and frame chunking block the central QUIC migration result.
+
+## 3. Non-goals
+
+QuicVid does not aim to build a production video-conferencing system.
+
+Out of scope unless the core project is already complete:
 
 - public Internet NAT traversal;
-- signaling/account infrastructure;
-- mobile operating-system integration;
+- user accounts or signaling infrastructure;
+- mobile OS integration;
 - multi-party conferencing;
-- production-quality audio/video synchronization;
+- production-grade audio/video synchronization;
 - replacing WebRTC;
-- large commercial-app or user-study evaluation.
+- commercial video-app benchmarking;
+- user studies;
+- guaranteed seamless migration in arbitrary real-world networks.
 
-The expected final claim is narrower and more defensible: under controlled local, LAN, or Mininet conditions, QUIC migration can help a video-call prototype maintain session continuity with less application-visible disruption than a simple baseline.
+A careful final claim should be:
 
----
+> QuicVid demonstrates, under controlled conditions, that a Quinn-based video-call prototype can preserve an active media-like session across selected client-side migration events and reduce application-visible disruption compared with a simple baseline that lacks QUIC migration support.
 
-## 2. Current reality of the repository
+## 4. Current repository state
 
-The old README and project plan described a much larger intended project: Qt GUI, FFmpeg, quiche, commercial video-app baselines, mobile WiFi-to-cellular handover, user studies, and statistical evaluation.
+The project previously had a broader and more aspirational scope, including quiche, Qt/GUI work, FFmpeg, commercial-app baselines, mobile handover, and larger statistical evaluation. The current plan narrows the project into a product-shaped Quinn prototype with a staged fake-video-first migration path.
 
-That old plan was mostly aspirational. The work that actually happened was more focused on exploring QUIC migration behavior.
+### 4.1 Active path: Quinn
 
-The existing useful work is:
+New product work should use **Quinn** as the active QUIC implementation path.
 
-### 2.1 `quinn-ping/`
+Existing Quinn-related prototypes:
 
-A Quinn-based QUIC ping prototype.
+- `quinn-ping/`: basic Quinn client/server and migration/rebinding reference;
+- `mouse-coordinates/`: QUIC datagram telemetry prototype and useful reference for fake-video datagrams.
 
-Existing value:
+### 4.2 Legacy/background path: quiche
 
-- validates basic Quinn client/server setup;
-- uses QUIC streams;
-- sends periodic application messages;
-- exercises endpoint rebinding;
-- logs latency and connection behavior;
-- serves as the simplest migration sanity check.
+Older C/quiche work is retained as background material only.
 
-### 2.2 `mouse-coordinates/`
+It helped explore:
 
-A Quinn-based QUIC datagram prototype.
+- QUIC connection IDs;
+- path validation;
+- connection migration behavior;
+- low-level migration API issues.
 
-Existing value:
+However, no new product feature should depend on quiche unless the project scope is explicitly changed.
 
-- sends real-time mouse telemetry over QUIC datagrams;
-- uses a traffic pattern closer to media than ping/pong;
-- shows low-latency fire-and-forget updates;
-- provides a stepping stone toward video frame transport;
-- demonstrates rebinding/migration behavior during active datagram traffic.
+### 4.3 Baseline-study documents
 
-### 2.3 quiche experiments
+The old baseline-study material is useful as project motivation, but the revised project should use a smaller controlled baseline comparison. The baseline must reuse the same fake/real video workload, frame IDs, logging schema, and disruption metrics as QuicVid where possible.
 
-The repository includes older C/quiche experiments and documentation.
+## 5. Runtime architecture
 
-Existing value:
-
-- helped explore QUIC migration concepts;
-- documented path validation, connection ID, and `quiche_conn_probe_path()` issues;
-- is useful historical/background material.
-
-Current decision:
-
-- quiche is **legacy**;
-- Quinn is the active implementation path;
-- no new product feature should depend on quiche.
-
-### 2.4 baseline-study documents
-
-The old baseline-study material is useful as project motivation, but it is too large for the revised implementation plan.
-
-Current decision:
-
-- keep it as background;
-- replace the large commercial-app/user-study plan with a small controlled baseline demo.
-
----
-
-## 3. Chosen runtime architecture
-
-The project should use a **client/server QUIC architecture**.
-
-There will be two app instances:
-
-1. **Server/callee instance**
-   - listens on a UDP port;
-   - accepts a Quinn connection;
-   - receives media/control messages;
-   - sends its own media back if bidirectional video is enabled;
-   - logs remote address changes and connection state.
-
-2. **Client/caller instance**
-   - connects to the server;
-   - initiates the call;
-   - captures local camera frames;
-   - sends media/control messages;
-   - triggers migration in the main robustness demo.
-
-The first product version does **not** need a signaling server, account system, peer discovery, NAT traversal, or WebRTC-style public Internet calling.
-
-The architecture is intentionally simple:
+QuicVid should use a simple client/server architecture.
 
 ```text
-Client app instance                         Server app instance
--------------------                         -------------------
-GUI                                        GUI or receiver view
-Camera capture                             Camera capture optional
-Video encoder                              Video encoder optional
-Video sender  ───── QUIC datagrams ─────▶  Video receiver
-Video receiver ◀──── QUIC datagrams ─────  Video sender optional
-Control task  ───── QUIC stream ────────▶  Control task
-Migration trigger                          Migration observer
-Logs                                       Logs
+Client instance                            Server instance
+---------------                            ---------------
+CLI / optional GUI                         CLI / optional GUI
+Fake video source                          Frame receiver
+Camera/test-pattern source later           Remote preview later
+Control stream sender  ─── QUIC stream ─▶  Control stream receiver
+Media datagram sender ─── QUIC datagrams ▶ Media datagram receiver
+Migration controller                       Migration observer
+JSONL logs                                 JSONL logs
 ```
 
-For the minimum product, one-way video from client to server is acceptable during early development, but the final product should aim for bidirectional video if time allows.
-
----
-
-## 4. Execution modes
-
-The plan should support three concrete ways to run the project.
-
-### 4.1 Mode A: Local two-process demo
-
-This is the first required execution mode.
-
-Both server and client run on the same development machine:
-
-```bash
-cargo run --bin quicvid -- --mode server --listen 127.0.0.1:4433
-cargo run --bin quicvid -- --mode client --connect 127.0.0.1:4433
-```
-
-Purpose:
-
-- fastest development loop;
-- validates GUI, media pipeline, Quinn connection, packet format, and logging;
-- can test migration through local UDP socket rebinding, usually changing local port rather than physical network.
-
-Expected behavior:
-
-- server window shows remote video from client;
-- client window shows local preview and optionally remote video;
-- migration button or shortcut triggers client-side endpoint rebinding;
-- server log shows the client remote address/port change;
-- QUIC connection stays associated with the same application call.
-
-Limitations:
-
-- does not prove real network handover;
-- mostly tests port rebinding/path validation behavior;
-- still valuable as the first integration demo.
-
-### 4.2 Mode B: Two-host LAN demo
-
-This is the main product-style demo mode.
-
-Run the server on one host and the client on another host on the same network:
-
-```bash
-# Host A
-cargo run --bin quicvid -- --mode server --listen 0.0.0.0:4433
-
-# Host B
-cargo run --bin quicvid -- --mode client --connect <server-ip>:4433
-```
-
-Purpose:
-
-- shows the product as an actual video-call app between two machines;
-- validates that media transport and GUI behavior are not only loopback artifacts;
-- allows controlled disruption through interface changes, firewall rules, or socket rebinding.
-
-Expected behavior:
-
-- Host B sends live video to Host A;
-- optionally Host A sends live video back to Host B;
-- client-side migration/rebinding is triggered during the call;
-- server observes remote address/port changes;
-- call continues or resumes without full application restart.
-
-Limitations:
-
-- no NAT traversal;
-- both hosts should be reachable directly;
-- not a public Internet video-call product.
-
-### 4.3 Mode C: Mininet controlled migration demo
-
-This is the main evaluation mode.
-
-The app runs inside a controlled Mininet topology. The exact topology can be simple at first:
-
-```text
-h1/client ─── s1 ─── h2/server
-```
-
-Later, it can include two client-side paths:
-
-```text
-             path A
-h1/client ─────────── h2/server
-     │                  ▲
-     └──── path B ──────┘
-```
-
-Purpose:
-
-- provides a repeatable migration/disruption scenario;
-- allows scripted comparison between QUIC and baseline behavior;
-- gives evidence for the final report.
-
-Expected behavior:
-
-- start server in the server namespace;
-- start client in the client namespace;
-- start video stream;
-- trigger client-side migration/rebinding or path change;
-- collect logs from both sides;
-- summarize frame loss, freeze duration, and connection continuity.
-
-Important note:
-
-Mininet mode is not the first thing to build. The correct order is:
-
-1. local two-process video call;
-2. two-host video call;
-3. Mininet-controlled robustness demo.
-
----
-
-## 5. Application roles and responsibilities
-
-### 5.1 Server role
+### 5.1 Server responsibilities
 
 The server should:
 
 - bind to a UDP socket;
 - create a Quinn endpoint;
 - accept incoming QUIC connections;
-- open or accept a reliable control stream;
-- receive video datagrams;
-- decode/render received video;
-- optionally capture and send its own video;
-- log connection ID, peer address, frame numbers, and migration events;
-- stay alive when the client changes source address/port.
+- receive control messages over streams;
+- receive fake or real video frames over datagrams;
+- track frame IDs, missing frames, out-of-order frames, and receive gaps;
+- observe peer address/port changes where visible;
+- write structured JSONL logs;
+- print run summaries.
 
-Minimum server UI:
-
-- local status: listening / connected / in call / migrating / disconnected;
-- remote video panel;
-- frame rate and frame count;
-- peer address display;
-- migration event indicator.
-
-### 5.2 Client role
+### 5.2 Client responsibilities
 
 The client should:
 
-- connect to the server address;
-- create or open a control stream;
-- capture local camera frames;
-- encode or packetize video;
-- send video over QUIC datagrams;
-- receive remote video if bidirectional mode is implemented;
-- trigger migration/rebinding;
-- log frame send events and migration timing.
+- connect to the server;
+- generate a session ID;
+- send an initial client hello over a QUIC stream;
+- generate fake video frames first;
+- send fake or real frames over QUIC datagrams;
+- monitor media/network quality where needed;
+- trigger manual or automatic migration;
+- optionally bind to a selected local address or interface;
+- write structured JSONL logs;
+- print run summaries.
 
-Minimum client UI:
+### 5.3 Control streams
 
-- connect/start button;
-- stop button;
-- local preview;
-- remote video panel if bidirectional mode is implemented;
-- migration button;
-- connection state;
-- migration state;
-- basic statistics.
+QUIC streams should carry reliable control messages such as:
 
-### 5.3 Shared protocol layer
-
-The shared protocol should define:
-
-- control messages;
-- video packet format;
-- optional audio packet format;
-- session identifiers;
-- frame sequence numbers;
-- timestamps;
-- keyframe markers if encoded video is used;
-- experiment metadata if running in evaluation mode.
-
-Suggested first video packet fields:
-
-```text
-message_type: video_frame_chunk
-session_id
-stream_id
-frame_id
-chunk_id
-chunk_count
-timestamp_ms
-flags
-payload
-```
-
-If frame chunks are not needed at first, the initial format can be simpler:
-
-```text
-message_type: video_frame
-session_id
-frame_id
-timestamp_ms
-payload
-```
-
-However, real QUIC datagrams have size limits, so chunking will likely become necessary once the video payload is non-trivial.
-
----
-
-## 6. Transport design
-
-### 6.1 Use QUIC streams for control
-
-Reliable streams should carry:
-
-- call setup;
-- call accepted/rejected;
-- codec/settings negotiation;
-- start/stop call;
+- client hello;
+- session setup;
+- selected mode and parameters;
 - migration debug messages;
-- graceful shutdown;
-- optional text/status messages.
+- graceful shutdown.
 
-### 6.2 Use QUIC datagrams for media
+### 5.4 Media datagrams
 
-QUIC datagrams should carry:
+QUIC datagrams should carry time-sensitive media-like payloads:
 
-- video frame packets/chunks;
-- optional audio packets;
-- low-latency telemetry.
+- fake video frames in the early milestones;
+- test-pattern or camera frames later;
+- optional audio only if core video/migration work is stable.
 
-Reason:
+Datagrams are appropriate because old media frames are often less useful than fresh ones. Late frames should be measurable and droppable rather than blocking the stream.
 
-- media frames are time-sensitive;
-- stale frames should often be dropped rather than delivered late;
-- reliable streams can introduce head-of-line delay;
-- the existing `mouse-coordinates` prototype already uses datagrams successfully.
+## 6. Execution modes
 
-### 6.3 Migration mechanism
+QuicVid should support four execution modes over the course of the project.
 
-Migration should be triggered first on the client side.
+### 6.1 Local two-process mode
 
-The initial migration trigger can be:
+Client and server run on the same development machine.
 
-- GUI button: `Trigger migration`;
-- keyboard shortcut;
-- CLI flag: `--auto-migrate-after 10s`;
-- experiment script command.
+Purpose:
 
-The first technical implementation can reuse the idea from `quinn-ping`/`mouse-coordinates`:
+- fastest development loop;
+- first app integration target;
+- local QUIC connection and fake-video tests;
+- local migration/rebinding sanity checks.
 
-- rebind the Quinn endpoint to a new UDP socket/local port;
-- continue sending media/control data;
-- server observes a new remote address/port;
-- QUIC validates the path and keeps connection state.
+### 6.2 Two-device LAN mode
 
-For stronger demos, later migration can bind to a different local interface/address where available.
+Server runs on one physical device and client runs on another reachable device.
 
----
+Purpose:
 
-## 7. Baseline architecture
+- proves real client/server operation;
+- supports product-style demonstrations;
+- prepares for physical WiFi switching.
 
-The baseline should be simple and controlled. It does not need to be a complete alternative product.
+### 6.3 Mininet mode
 
-The baseline must answer:
+Client and server run in a controlled network topology.
 
-> What happens to the same video workload without QUIC migration support?
+Purpose:
 
-Recommended baseline options:
+- repeatable migration/disruption experiments;
+- structured comparison between QUIC and baseline;
+- main evidence path for the final report.
 
-### 7.1 TCP baseline
+### 6.4 Physical WiFi-to-WiFi migration mode
 
-A simple TCP video sender/receiver.
+Server remains reachable while the client switches between WiFi networks.
 
-Expected behavior during address/path interruption:
+Purpose:
 
-- connection breaks;
-- sender blocks or errors;
-- app must reconnect;
-- receiver sees a new session after reconnect.
+- persuasive product demo;
+- shows the idea in a realistic setting;
+- high value but risky due to routing, firewall, OS, and network behavior.
 
-This is a clear contrast to QUIC connection migration.
+Mininet should be treated as the controlled evidence path. Physical WiFi should be treated as a strong demo path, not the only proof of success.
 
-### 7.2 UDP session-token baseline
+## 7. Migration controller design
 
-A simple UDP video sender/receiver with an application-level session token.
+Migration should not be implemented as random rebinding calls scattered through the code. QuicVid should have a dedicated migration controller.
 
-Expected behavior:
+The migration controller should own:
 
-- receiver may see packets from a new address;
-- continuity must be handled manually at application level;
-- no transport-level migration or path validation exists;
-- useful to explain what QUIC gives beyond raw datagrams.
+- migration mode: `off`, `manual`, `automatic`;
+- migration state: `healthy`, `degraded`, `migration_candidate`, `migrating`, `recovered`, `failed`;
+- configured thresholds;
+- cooldown behavior;
+- selected local bind address or interface if supported;
+- migration start/completion/failure events;
+- disruption summary around migration.
 
-### 7.3 Reconnect baseline
-
-A baseline that intentionally reconnects after disruption.
-
-Expected behavior:
-
-- visible pause;
-- new connection/session;
-- application-level recovery required.
-
-Minimum requirement:
-
-- implement at least one baseline;
-- the baseline must use the same or similar video workload;
-- the final demo must compare disruption against QuicVid.
-
----
-
-## 8. Definition of done
-
-The project is done when all P0 items are complete.
-
-### 8.1 Product-level done
-
-- QuicVid runs as a desktop app.
-- The app can run in server mode.
-- The app can run in client mode.
-- The server and client can run as separate processes.
-- The server and client can run on the same host for local testing.
-- The server and client can run on two reachable hosts for product-style testing.
-- The client captures live camera video.
-- The receiver displays remote video.
-- Video data is transported over Quinn/QUIC.
-- The UI shows call state and connection state.
-- The app can start and stop a call cleanly.
-
-### 8.2 Migration-level done
-
-- Migration can be triggered during an active video call.
-- Migration does not silently restart the whole application session.
-- The app logs migration start time.
-- The app logs whether the QUIC connection survived.
-- The server logs peer address/port changes.
-- The app measures or estimates frame disruption around migration.
-- The demo shows that the QUIC call continues or resumes with bounded disruption.
-
-### 8.3 Robustness-demo done
-
-- A baseline video transport exists.
-- The same style of disruption/migration is applied to the baseline.
-- The baseline shows larger disruption, reconnect, drop, or new-session behavior.
-- The QUIC demo and baseline demo can be run from documented commands.
-- A short summary compares the two.
-
-### 8.4 Documentation-level done
-
-- README describes the actual Quinn-based direction.
-- README explains local two-process mode.
-- README explains two-host mode.
-- README explains Mininet/evaluation mode if implemented.
-- README marks quiche work as legacy.
-- docs explain architecture, migration behavior, evaluation setup, and limitations.
-- final report can be written from repo documentation and results.
-
----
-
-## 9. Minimum successful demo
-
-The minimum successful demo has two parts.
-
-### 9.1 Baseline demo
-
-Run:
-
-```bash
-cargo run --bin quicvid-baseline -- --mode server --listen 0.0.0.0:5000
-cargo run --bin quicvid-baseline -- --mode client --connect <server-ip>:5000
-```
-
-Then trigger disruption:
-
-```bash
-# Example only; exact command depends on final setup
-./experiments/trigger-baseline-disruption.sh
-```
-
-Show:
-
-- video freezes or stops;
-- reconnect is required or a new session starts;
-- logs record the interruption.
-
-### 9.2 QUIC demo
-
-Run:
-
-```bash
-cargo run --bin quicvid -- --mode server --listen 0.0.0.0:4433
-cargo run --bin quicvid -- --mode client --connect <server-ip>:4433
-```
-
-Then trigger migration:
-
-```bash
-# Example options
-press "M" in the GUI
-# or
-cargo run --bin quicvid -- --mode client --connect <server-ip>:4433 --auto-migrate-after 10s
-```
-
-Show:
-
-- video continues or resumes without full application reconnect;
-- same call/session remains active;
-- server observes new peer address/port;
-- logs summarize frame disruption.
-
-Example summary:
+Suggested first automatic policy:
 
 ```text
-Experiment: quic-video-migration-001
-Migration triggered at: 12.40s
-Connection survived: yes
-Application reconnect required: no
-Peer address changed: yes
-Frames sent: 472
-Frames received: 459
-Frames lost near migration: 8
-Estimated visible freeze: 280 ms
+healthy
+  -> degraded if receive gap exceeds warning threshold
+  -> migration_candidate if receive gap exceeds migration threshold
+  -> migrating when rebind/migration is triggered
+  -> recovered if frames resume within expected window
+  -> failed if frames do not resume
 ```
+
+A minimal first automatic trigger is enough:
+
+```text
+receive gap > threshold -> trigger migration -> enter cooldown
+```
+
+Missing-frame thresholds can be added later.
+
+## 8. Baseline design
+
+The baseline must use the same workload as QuicVid. It should not be a separate toy that sends unrelated data.
+
+The baseline should reuse:
+
+- fake video frame source;
+- real/test-pattern video source if implemented;
+- frame IDs;
+- session IDs where useful;
+- JSONL logging schema;
+- frame loss and receive-gap metrics;
+- summary scripts.
+
+Recommended baseline choices:
+
+1. **TCP/reconnect baseline**: the connection breaks or reconnects after disruption, causing a visible/session-level interruption.
+2. **Non-migrating UDP baseline**: demonstrates what has to be handled manually without transport-level migration.
+
+A simple reconnect baseline is likely the clearest first comparison.
+
+## 9. Milestone structure
+
+The project should be organized into four major milestones. Each milestone has epic issues, and each epic has vertical-slice task issues.
+
+```text
+Milestone 1 — Recover and build the fake-video QUIC baseline
+Milestone 2 — Manual and automatic QUIC migration with fake video
+Milestone 3 — Real video and QUIC vs baseline comparison
+Milestone 4 — Evaluation, physical demo, and final release
+```
+
+This replaces the older 11-milestone structure. The new structure keeps the project board readable while preserving the stronger fake-video-first design.
 
 ---
 
-## 10. Milestones as vertical slices
+# Milestone 1 — Recover and build the fake-video QUIC baseline
 
-Each milestone should produce a runnable or inspectable result. Avoid long horizontal work where media, GUI, and transport are built separately for weeks without integration.
+## Goal
 
-### Milestone 1 — Reset the repository around the Quinn path
+Restart the project cleanly, align it around Quinn, and build the first product-shaped QuicVid application that streams numbered fake video frames over QUIC datagrams.
 
-Done when the repository clearly says what is active and what is legacy.
+This milestone answers:
 
-GitHub issue titles:
+> Can we run separate client/server QuicVid instances and stream measurable video-like frames over Quinn?
 
-- Update README to describe the Quinn-based client/server architecture
-- Document the decision to move from quiche to Quinn
-- Mark quiche experiments as legacy background work
-- Move old aspirational plans into project-history documentation
-- Verify `quinn-ping` still builds and runs
-- Verify `mouse-coordinates` still builds and runs
-- Document how existing Quinn demos are run today
-- Add a current-status document for existing prototypes
-- Remove quiche from the active implementation roadmap
-- Add a project glossary for client, server, migration, rebinding, and baseline
+## Deliverable
 
-### Milestone 2 — Build the minimal client/server app shell
+A Quinn-based QuicVid client/server app that:
 
-Done when two QuicVid app instances can run as server and client and show connection state.
+- runs in server and client modes;
+- exchanges an initial control message over a QUIC stream;
+- generates a session ID;
+- sends numbered fake video frames over QUIC datagrams;
+- logs frame-level delivery behavior;
+- detects missing and out-of-order frames;
+- prints frame stream summaries.
 
-GitHub issue titles:
+## Epic 1.1 — Recover project state and align QuicVid around Quinn
 
-- Create the main `quicvid` Rust application crate
-- Add `--mode server` and `--mode client` command-line options
-- Add `--listen` option for server mode
-- Add `--connect` option for client mode
-- Add a minimal desktop window for the server role
-- Add a minimal desktop window for the client role
-- Add Start Call and Stop Call controls
-- Add server listening state to the UI
-- Add client connecting state to the UI
-- Add connected and disconnected states to the UI
-- Run the Quinn server task from the app shell
-- Run the Quinn client task from the app shell
-- Add channel-based communication between GUI and transport tasks
-- Add local two-process demo instructions
-- Add structured logs for app startup and connection state
+Purpose: clarify active scope, document existing prototypes, and mark old work as legacy/background.
 
-### Milestone 3 — Add local video capture inside the app
+Sub-issues:
 
-Done when at least the client app can show local camera preview.
+- Add `PLAN.md` with revised Quinn-based product scope
+- Update `README.md` with engineering problem and concrete achievement scope
+- Document September project history and scope reset
+- Document Quinn as the active QUIC implementation path
+- Mark quiche experiments and notes as legacy
+- Verify `quinn-ping` still builds
+- Verify `quinn-ping` still runs as client and server
+- Verify `mouse-coordinates` still builds
+- Verify `mouse-coordinates` still sends QUIC datagrams
+- Document current runnable demo commands
+- Add `docs/current-status.md`
+- Add local development setup notes
+- Clean obsolete generated files and macOS metadata
 
-GitHub issue titles:
+Estimate: **12–20 h**
 
+## Epic 1.2 — Build the initial QuicVid client/server app skeleton
+
+Purpose: create the first product-shaped app foundation.
+
+Sub-issues:
+
+- Create the main QuicVid app crate
+- Add CLI mode selection for server and client
+- Add server listen address configuration
+- Add client connect address configuration
+- Add local bind address configuration
+- Add migration mode CLI option
+- Copy minimal Quinn server setup into the app
+- Copy minimal Quinn client setup into the app
+- Send initial client hello over a QUIC stream
+- Receive and log client hello on the server
+- Add session ID generation for client runs
+- Add structured JSONL event logging
+- Add graceful shutdown handling
+- Add local two-process run instructions
+- Add one-command local smoke test script
+
+Estimate: **25–40 h**
+
+Recommended naming:
+
+```text
+Product name: QuicVid
+Cargo package: quic-vid
+Rust crate: quic_vid
+CLI binary: quic-vid
+```
+
+## Epic 1.3 — Stream fake video frames over Quinn datagrams
+
+Purpose: create the first media-shaped workload before real video complexity.
+
+Sub-issues:
+
+- Define the first QuicVid datagram frame format
+- Add fake video frame generator
+- Send numbered fake video frames from client to server
+- Receive fake video frames on the server
+- Log fake frame send events
+- Log fake frame receive events
+- Detect missing fake frame IDs
+- Detect out-of-order fake frame IDs
+- Add configurable fake video frame rate
+- Add configurable fake video run duration
+- Add configurable fake frame payload size
+- Add frame stream summary at shutdown
+- Add fake-video local demo command
+- Document fake video datagram mode
+- Add basic tests for fake frame format and frame tracking
+
+Estimate: **30–45 h**
+
+## Milestone 1 estimate
+
+Total: **67–105 h**
+
+---
+
+# Milestone 2 — Manual and automatic QUIC migration with fake video
+
+## Goal
+
+Use the fake-video workload to demonstrate the core migration idea: the same logical session can continue through controlled QUIC migration, and the application can decide when to migrate based on media degradation.
+
+This is the technical heart of the project.
+
+## Deliverable
+
+A fake-video QUIC demo where migration can be triggered during active datagram streaming, disruption is measured, and automatic migration can be triggered from media-quality degradation.
+
+## Epic 2.1 — Demonstrate manual QUIC migration during fake video streaming
+
+Sub-issues:
+
+- Add manual migration trigger for the client
+- Add periodic migration trigger for fake video mode
+- Reuse endpoint rebinding ideas from `quinn-ping`
+- Log migration start on the client
+- Log migration completion on the client
+- Log server-observed peer address changes
+- Log stable call/session identity across migration
+- Measure fake frame loss around migration
+- Measure fake frame receive gap around migration
+- Print migration disruption summary at shutdown
+- Add local fake-video migration demo command
+- Add Mininet fake-video migration scenario
+- Document how to reproduce fake-video migration
+
+Estimate: **30–50 h**
+
+## Epic 2.2 — Add migration controller subsystem
+
+Sub-issues:
+
+- Define migration controller responsibilities
+- Add migration mode: `off`, `manual`, `automatic`
+- Add migration state: `healthy`, `degraded`, `migrating`, `recovered`, `failed`
+- Add migration event model
+- Add migration cooldown configuration
+- Add selected local bind address or interface field
+- Add migration result tracking
+- Route manual migration trigger through migration controller
+- Route periodic migration trigger through migration controller
+- Log migration state transitions
+- Document migration controller design
+
+Estimate: **20–35 h**
+
+## Epic 2.3 — Implement automatic migration strategy for fake video
+
+Sub-issues:
+
+- Define automatic migration strategy for QuicVid
+- Add media quality monitor for received video frames
+- Track latest received frame timestamp
+- Track consecutive missing video frame IDs
+- Track largest receive gap during a call
+- Add healthy connection state
+- Add degraded connection state
+- Add migration-candidate connection state
+- Trigger migration after video receive gap threshold
+- Trigger migration after consecutive missing frame threshold
+- Add migration cooldown to prevent repeated rebinding loops
+- Log automatic migration trigger reason
+- Log pre-migration media quality snapshot
+- Log post-migration media recovery time
+- Expose automatic migration mode in the CLI
+- Add configurable migration thresholds
+- Add controlled degradation scenario for automatic migration
+- Add fake-video automatic migration demo
+- Compare manual migration and automatic migration behavior
+- Document the automatic migration strategy
+- Document limitations of the migration strategy
+
+Estimate: **40–70 h**
+
+## Milestone 2 estimate
+
+Total: **90–155 h**
+
+Fallback if time is tight:
+
+```text
+receive gap > threshold -> trigger migration -> cooldown
+```
+
+The missing-frame trigger can be added later.
+
+---
+
+# Milestone 3 — Real video and QUIC vs baseline comparison
+
+## Goal
+
+Turn the fake-video migration result into a more visible video prototype and compare QUIC migration against a simple baseline using the same workload.
+
+Real video is valuable for demo quality, but the project should not depend entirely on camera/GUI success. The minimum version can use test-pattern visual frames.
+
+## Deliverable
+
+A visible one-way video or test-pattern stream over Quinn, plus a baseline comparison that demonstrates why QUIC migration helps.
+
+## Epic 3.1 — Add local video capture and preview
+
+Sub-issues:
+
+- Choose the initial Rust-native GUI framework
+- Add minimal GUI window
+- Add app state display to the GUI
+- Add local video preview panel
 - Add camera device discovery
-- Add camera capture task
-- Display local camera preview in the client UI
-- Display local camera preview in the server UI if bidirectional mode is enabled
+- Add camera frame capture
+- Display captured camera frames in the local preview
 - Add fallback test-pattern video source
-- Add camera start and stop lifecycle handling
-- Add frame timestamp metadata
-- Add frame sequence numbers before network transport
-- Add local frame-rate counter
+- Add camera unavailable error message
 - Add configurable camera resolution
 - Add configurable camera frame rate
-- Add camera unavailable error message
-- Document supported local video sources
+- Add local preview frame-rate display
+- Add start and stop preview controls
+- Document local preview setup
 
-### Milestone 4 — Send the first video frames over Quinn datagrams
+Estimate: **35–60 h**
 
-Done when one-way live video works from client to server over QUIC.
+## Epic 3.2 — Stream real video over Quinn from client to server
 
-GitHub issue titles:
+Sub-issues:
 
-- Define the first video datagram packet format
-- Add media session ID to video packets
-- Send test-pattern frames over QUIC datagrams
-- Receive test-pattern frames over QUIC datagrams
-- Render received test-pattern frames in the server UI
-- Send camera frames over QUIC datagrams
-- Render received camera frames in the server UI
-- Add frame sequence number validation on receive
-- Add frame receive timestamp logging
-- Add frame send timestamp logging
-- Drop stale video frames on the receiver
-- Add received-frame-rate display
-- Add sent-frame-rate display
-- Add frame loss estimate for one-way video
-- Add two-process local video-over-QUIC demo script
+- Define the first real video frame payload format
+- Convert captured frames into transport payloads
+- Add frame chunking when payload exceeds datagram size
+- Send local video frames over Quinn datagrams
+- Receive video frame datagrams on the server
+- Reconstruct received video frames
+- Display received video frames in a remote video panel
+- Drop stale video frames under backlog
+- Log real video frame send events
+- Log real video frame receive events
+- Log video decode or reconstruction failures
+- Add remote video frame-rate display
+- Add video-only client-to-server demo command
+- Document the one-way real video demo
 
-### Milestone 5 — Make video practical enough for the robustness demo
+Estimate: **45–80 h**
 
-Done when the video stream is small and stable enough to survive normal local/two-host testing.
+## Epic 3.3 — Demonstrate robust real-video continuity with QUIC migration
 
-GitHub issue titles:
+Sub-issues:
 
-- Decide whether first demo uses raw frames, JPEG frames, or encoded video
-- Add frame compression for the first practical video demo
-- Add video frame decompression on receive
-- Add datagram chunking for oversized video frames
-- Add frame reassembly from chunks
-- Drop incomplete stale frames after timeout
-- Add low-resolution demo preset
-- Add low-frame-rate demo preset
-- Add configurable media quality preset
-- Add keyframe marker if encoded video requires it
-- Add decoder error logging
-- Add video backlog monitoring
-- Add receiver-side frame dropping under backlog
-- Document media quality trade-offs for the demo
+- Enable manual migration trigger during real video streaming
+- Enable automatic migration trigger during real video streaming
+- Show migration state in the client UI
+- Show migration state in the server UI
+- Log video migration start event
+- Log video migration completion event
+- Log server-observed address change during video call
+- Measure frame loss during real video migration
+- Measure visible receive gap during real video migration
+- Show post-migration video recovery in the UI
+- Add real-video migration summary output
+- Add one-command real-video migration demo
+- Add Mininet real-video migration scenario
+- Document the QUIC real-video migration demo
 
-### Milestone 6 — Make the app run across two hosts
+Estimate: **35–60 h**
 
-Done when the same app works on two reachable machines.
+## Epic 3.4 — Add baseline video transport to show the benefit of QUIC
 
-GitHub issue titles:
+Sub-issues:
 
-- Add server bind address documentation for LAN testing
-- Add client server-address configuration documentation
-- Add certificate/trust handling for two-host Quinn testing
-- Add firewall troubleshooting notes for UDP server port
-- Verify one-way video over QUIC between two hosts
-- Verify optional bidirectional video between two hosts
-- Add two-host demo checklist
-- Add network address display to the UI
-- Log local and remote socket addresses
-- Add connection failure diagnostics for two-host mode
+- Choose the minimal baseline transport design
+- Add baseline mode to the app CLI
+- Reuse fake video workload in baseline mode
+- Reuse real video workload in baseline mode
+- Log baseline session start events
+- Log baseline session restart events
+- Trigger comparable interruption scenario for baseline mode
+- Measure baseline frame loss around interruption
+- Measure baseline visible receive gap
+- Add reconnect behavior for baseline mode
+- Add baseline summary output
+- Add side-by-side QUIC versus baseline demo script
+- Document the baseline comparison scenario
+- Document what the baseline comparison proves
+- Document what the baseline comparison does not prove
 
-### Milestone 7 — Add migration to the active video call
+Estimate: **35–60 h**
 
-Done when migration can be triggered while the video stream is active.
+## Milestone 3 estimate
 
-GitHub issue titles:
+Total: **150–260 h**
 
-- Add manual migration trigger in client mode
-- Add `--auto-migrate-after` option for client mode
-- Rebind the Quinn client endpoint during an active video call
-- Continue sending video after endpoint rebinding
-- Show migrating state in the client UI
-- Show migration observed state in the server UI
-- Log migration start timestamp on the client
-- Log post-migration peer address on the server
-- Log stable QUIC connection identity during migration
-- Measure frames sent during the migration window
-- Measure frames received during the migration window
-- Estimate visible video freeze duration around migration
-- Add migration failure state to the UI
-- Add migration demo instructions for local two-process mode
-- Add migration demo instructions for two-host mode
+Minimum acceptable Milestone 3 if time is tight:
 
-### Milestone 8 — Add the baseline comparison
+- test-pattern visual frames instead of full camera support;
+- one-way video only;
+- simple reconnect baseline;
+- same fake-video logging and metrics reused.
 
-Done when the QUIC benefit can be demonstrated against a simple baseline.
+---
 
-GitHub issue titles:
+# Milestone 4 — Evaluation, physical demo, and final release
 
-- Define the baseline transport choice for the final demo
-- Implement a TCP video baseline using the same video source
-- Add baseline server mode
-- Add baseline client mode
-- Add baseline frame send logging
-- Add baseline frame receive logging
-- Add baseline session ID logging
-- Add baseline reconnect behavior after disruption
-- Add baseline disruption trigger script
-- Add QUIC migration trigger script for comparison
-- Add shared demo workload for QUIC and baseline runs
-- Add summary output comparing QUIC and baseline disruption
-- Add side-by-side demo instructions
-- Document what the baseline comparison proves and does not prove
+## Goal
 
-### Milestone 9 — Add controlled Mininet evaluation
+Turn the prototype into presentable evidence: structured logs, analysis scripts, demo instructions, and optionally a physical WiFi-to-WiFi migration demo.
 
-Done when the robustness demo can be repeated in a controlled environment.
+## Deliverable
 
-GitHub issue titles:
+A final release with runnable demos, summarized results, limitations, and clear instructions.
 
-- Add minimal Mininet topology for QuicVid client and server
-- Add Mininet script to start the QUIC server
-- Add Mininet script to start the QUIC client
-- Add Mininet script to start the baseline server
-- Add Mininet script to start the baseline client
-- Add scripted client-side migration event
-- Add scripted baseline disruption event
-- Save client and server logs from Mininet runs
-- Add experiment ID and trial ID to all logs
-- Add repeated QUIC migration trial script
-- Add repeated baseline trial script
-- Add log parser for frame loss around migration
-- Add log parser for visible freeze estimate
-- Add result summary table for Mininet trials
-- Document Mininet setup and limitations
+## Epic 4.1 — Add experiment logging and analysis for migration robustness
 
-### Milestone 10 — Add audio if video and migration are stable
+Sub-issues:
 
-Done when basic audio works, or it is clearly marked as experimental and not required for core success.
+- Define stable JSONL experiment log schema
+- Add run ID to all log events
+- Add scenario name to all log events
+- Add migration window markers to logs
+- Add frame disruption summary script
+- Add receive-gap summary script
+- Add migration recovery-time summary script
+- Add QUIC versus baseline comparison script
+- Add CSV export for summarized results
+- Add markdown result table generation
+- Add sample result logs from local demo
+- Add sample result logs from Mininet demo
+- Document experiment log format
+- Document how to interpret migration results
 
-GitHub issue titles:
+Estimate: **35–60 h**
 
-- Add microphone device discovery
-- Add microphone capture task
-- Define audio datagram packet format
-- Send audio packets over QUIC datagrams
-- Receive audio packets over QUIC datagrams
-- Add basic audio playback
-- Add mute and unmute control
-- Add audio packet sequence numbers
-- Add small audio jitter buffer
-- Log audio underflow and overflow events
-- Add option to run in video-only mode
-- Document audio support status
+## Epic 4.2 — Demonstrate physical WiFi-to-WiFi migration with QuicVid
 
-### Milestone 11 — Product hardening and final documentation
+Priority: **P1 / stretch-core**
 
-Done when another person can run the demos from the repository.
+This is valuable, but the project should remain successful if the physical demo is only partially achieved. Mininet should remain the controlled evidence path.
 
-GitHub issue titles:
+Sub-issues:
 
-- Add one-command local QUIC demo script
-- Add one-command two-host QUIC demo checklist
-- Add one-command baseline demo script
-- Add one-command robustness comparison script
-- Add clear error messages for failed connection setup
-- Add clear error messages for camera failure
-- Add clean call teardown
-- Add clean media task shutdown
-- Add clean transport task shutdown
-- Add troubleshooting section to README
-- Add final architecture diagram
+- Add physical WiFi migration demo plan
+- Document required network topology for WiFi-to-WiFi migration
+- Add server mode suitable for stable LAN host
+- Add client mode suitable for WiFi switching
+- Add explicit local bind address option for client
+- Add network interface selection option for client
+- Add manual rebind command for physical WiFi demo
+- Add automatic rebind after receive-gap detection
+- Log local client socket address before WiFi switch
+- Log local client socket address after WiFi switch
+- Log server-observed peer address before WiFi switch
+- Log server-observed peer address after WiFi switch
+- Log call/session ID across WiFi switch
+- Measure frame gap during physical WiFi switch
+- Measure recovery time after physical WiFi switch
+- Add two-device fake-video WiFi-switch demo
+- Add two-device real-video WiFi-switch demo
+- Add checklist for server firewall and port access
+- Add troubleshooting notes for unreachable server after SSID switch
+- Add baseline WiFi-switch comparison
+- Document limitations of physical WiFi migration demo
+
+Estimate: **50–90 h**
+
+## Epic 4.3 — Package final QuicVid demo, documentation, and release
+
+Sub-issues:
+
+- Write final setup instructions
+- Write local two-process demo instructions
+- Write two-host LAN demo instructions
+- Write Mininet demo instructions
+- Write physical WiFi-to-WiFi demo instructions
+- Write QUIC versus baseline demo instructions
+- Add architecture diagram
+- Add protocol diagram
 - Add migration sequence diagram
-- Add final evaluation results summary
-- Add limitations document
-- Add future work document
-- Add final report outline
-- Add final presentation outline
+- Add automatic migration strategy diagram
+- Add final results summary
+- Add final limitations section
+- Add future work section
+- Add troubleshooting section
+- Add screenshots or demo images
+- Clean unused legacy files from active paths
+- Verify fresh-clone setup
 - Tag final project release
 
----
+Estimate: **35–60 h**
 
-## 11. Priority guide
+## Milestone 4 estimate
 
-### P0 — Required for project success
+Total: **120–210 h**
 
-- Quinn is the active implementation path.
-- App supports server mode and client mode.
-- Server and client run as separate processes.
-- Local two-process demo works.
-- Two-host demo works or has a clear documented blocker.
-- Client captures live video.
-- Receiver displays remote video.
-- Video is transported over Quinn.
-- Migration can be triggered during active video.
-- Baseline contrast exists.
-- Logs summarize QUIC vs baseline behavior.
-- README explains how to run the demo.
-
-### P1 — Important for a strong project
-
-- Video compression/chunking.
-- Bidirectional video.
-- Mininet repeated trials.
-- Audio.
-- Result tables.
-- UI polish.
-- Better failure handling.
-
-### P2 — Nice to have
-
-- Commercial app comparison.
-- User study.
-- Advanced charts.
-- Public Internet support.
-- NAT traversal.
-- Mobile handover.
-- Multi-party calls.
+Required part without physical WiFi stretch: **70–120 h**
 
 ---
 
-## 12. Suggested four-week schedule
+# 10. Final recommended epic hierarchy
 
-This assumes roughly 180-200 hours total.
+```text
+Milestone 1 — Recover and build the fake-video QUIC baseline
+├── Epic 1.1: Recover project state and align QuicVid around Quinn
+├── Epic 1.2: Build the initial QuicVid client/server app skeleton
+└── Epic 1.3: Stream fake video frames over Quinn datagrams
 
-### Week 1 — Quinn path, app shell, local video
+Milestone 2 — Manual and automatic QUIC migration with fake video
+├── Epic 2.1: Demonstrate manual QUIC migration during fake video streaming
+├── Epic 2.2: Add migration controller subsystem
+└── Epic 2.3: Implement automatic migration strategy for fake video
 
-Target outcome:
+Milestone 3 — Real video and QUIC vs baseline comparison
+├── Epic 3.1: Add local video capture and preview
+├── Epic 3.2: Stream real video over Quinn from client to server
+├── Epic 3.3: Demonstrate robust real-video continuity with QUIC migration
+└── Epic 3.4: Add baseline video transport to show the benefit of QUIC
 
-- repo reflects Quinn direction;
-- app can run as server or client;
-- local video preview works;
-- local two-process connection works.
-
-Main work:
-
-- Milestone 1;
-- Milestone 2;
-- first half of Milestone 3.
-
-### Week 2 — Video over QUIC and two-host demo
-
-Target outcome:
-
-- client sends video over QUIC;
-- server displays remote video;
-- two-host mode works if network setup allows;
-- logs show frame send/receive counts.
-
-Main work:
-
-- finish Milestone 3;
-- Milestone 4;
-- parts of Milestone 5;
-- Milestone 6.
-
-### Week 3 — Migration and baseline comparison
-
-Target outcome:
-
-- migration happens during active video;
-- QUIC session continuity is logged;
-- baseline demo exists;
-- the benefit of QUIC becomes visible.
-
-Main work:
-
-- Milestone 7;
-- Milestone 8.
-
-### Week 4 — Controlled evaluation, hardening, docs
-
-Target outcome:
-
-- repeated demo or Mininet trials exist;
-- results are summarized;
-- README and docs are final enough;
-- project can be presented and defended.
-
-Main work:
-
-- Milestone 9 if feasible;
-- Milestone 10 only if core video/migration is stable;
-- Milestone 11.
+Milestone 4 — Evaluation, physical demo, and final release
+├── Epic 4.1: Add experiment logging and analysis for migration robustness
+├── Epic 4.2: Demonstrate physical WiFi-to-WiFi migration with QuicVid
+└── Epic 4.3: Package final QuicVid demo, documentation, and release
+```
 
 ---
 
-## 13. Final claim to aim for
+# 11. Priority guide
+
+## P0 — Required for a respectable project
+
+- Epic 1.1: Recover project state and align QuicVid around Quinn
+- Epic 1.2: Build the initial QuicVid client/server app skeleton
+- Epic 1.3: Stream fake video frames over Quinn datagrams
+- Epic 2.1: Demonstrate manual QUIC migration during fake video streaming
+- Epic 2.2: Add migration controller subsystem
+- Epic 2.3: Implement automatic migration strategy for fake video
+- Epic 3.4: Add baseline video transport to show the benefit of QUIC
+- Epic 4.1: Add experiment logging and analysis for migration robustness
+- Epic 4.3: Package final QuicVid demo, documentation, and release
+
+## P1 — Strong product/demo value
+
+- Epic 3.1: Add local video capture and preview
+- Epic 3.2: Stream real video over Quinn from client to server
+- Epic 3.3: Demonstrate robust real-video continuity with QUIC migration
+- Epic 4.2: Demonstrate physical WiFi-to-WiFi migration with QuicVid
+
+## P2 — Optional product completeness
+
+- Extend QuicVid from one-way video to bidirectional calling
+- Add experimental audio support
+
+Real video is valuable, but the project should not depend completely on it. The strongest defensible minimum is fake-video migration, automatic migration strategy, baseline comparison, logging, and analysis.
+
+---
+
+# 12. Suggested time-boxed implementation path
+
+The implementation order should follow vertical slices, not a strict epic-number sequence.
+
+Recommended order:
+
+1. recover docs and existing demos;
+2. build client/server skeleton;
+3. send fake video over Quinn;
+4. add manual migration for fake video;
+5. add migration controller;
+6. add automatic migration for fake video;
+7. add baseline comparison using fake video;
+8. add logging/analysis scripts;
+9. add real video or test-pattern visuals;
+10. try physical WiFi-to-WiFi demo;
+11. package final demo and documentation.
+
+If time becomes tight, prioritize:
+
+```text
+fake-video stream -> manual migration -> automatic migration -> baseline -> logs/results -> final docs
+```
+
+and leave real video, GUI polish, physical WiFi, bidirectional calling, and audio as stretch/future work.
+
+---
+
+# 13. Final claim to aim for
 
 A careful final claim:
 
-> QuicVid demonstrates that a Quinn-based video-call prototype can preserve an active media session across controlled client-side migration events, reducing application-visible disruption compared with a simple baseline that lacks QUIC migration support.
+> QuicVid demonstrates that a Quinn-based video-call prototype can preserve an active media-like session across controlled client-side migration events, reducing application-visible disruption compared with a simple baseline that lacks QUIC migration support.
 
 Avoid claiming:
 
