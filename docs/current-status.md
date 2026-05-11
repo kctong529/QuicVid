@@ -37,21 +37,47 @@ Result:
 * Warning: `src/bin/server.rs` has an unused import, `net::SocketAddr`.
 
 Runtime status:
+- Verified in Mininet on 2026-05-11.
 
-* Pending runtime verification.
+Topology:
+- `h1`: `10.0.0.1/24`
+- `h2`: `10.0.0.2/24`
+- server runs on `h1`
+- client runs on `h2`
 
-Runtime notes from source inspection:
+Commands:
 
-* server listens on `0.0.0.0:4433`
-* client binds locally to `0.0.0.0:0`
-* client currently targets `10.0.0.1:4433`
-* client sends `PING` messages and expects `PONG`
-* client triggers endpoint rebinding every 5 rounds with `endpoint.rebind(...)`
-* the hard-coded `10.0.0.1:4433` target appears Mininet-oriented, so local two-process verification may require changing the target address to `127.0.0.1:4433` or making it configurable
+```bash
+sudo python3 scripts/mininet-two-hosts.py
+```
 
-Notes:
+Inside Mininet:
 
-* Keep as a reference for building the main `quic-vid` client/server skeleton in Epic 1.2.
+```bash
+h1 bash -lc 'cd /home/ubuntu/QuicVid/quinn-ping && ./target/debug/server > /tmp/quinn-ping-server.log 2>&1 &'
+h2 bash -lc 'cd /home/ubuntu/QuicVid/quinn-ping && ./target/debug/client > /tmp/quinn-ping-client.log 2>&1'
+h1 cat /tmp/quinn-ping-server.log
+h2 cat /tmp/quinn-ping-client.log
+```
+
+Result:
+
+* server starts on `0.0.0.0:4433`
+* client connects to `10.0.0.1:4433`
+* client sends repeated `PING` messages
+* server responds with `PONG`
+* client triggers endpoint rebinding every 5 rounds
+* server observes the peer source port change during the run
+* the same stable QUIC session ID continues after rebinding
+
+Observed example:
+
+* server saw peer change from `10.0.0.2:35506` to `10.0.0.2:37098`
+* stable session ID remained `275342434541600`
+
+Conclusion:
+
+* `quinn-ping` is a working Mininet runtime reference for Quinn client/server setup and endpoint rebinding.
 
 ### mouse-coordinates
 
@@ -83,12 +109,51 @@ Result:
 * `cargo build` succeeds.
 
 Runtime status:
+- Verified in Mininet on 2026-05-11.
 
-* Pending runtime verification.
+Topology:
+- `h1`: `10.0.0.1/24`
+- `h2`: `10.0.0.2/24`
+- server runs on `h1`
+- client runs on `h2`
 
-Notes:
+Commands:
 
-* Expected to inform the fake-video frame datagram path in Epic 1.3.
+```bash
+sudo python3 scripts/mininet-two-hosts.py
+```
+
+Inside Mininet:
+
+```bash
+h1 bash -lc 'cd /home/ubuntu/QuicVid/mouse-coordinates && ./target/debug/server'
+h2 bash -lc 'cd /home/ubuntu/QuicVid/mouse-coordinates && ./target/debug/client'
+```
+
+Result:
+
+* server starts on `0.0.0.0:4433`
+* client connects to `10.0.0.1:4433`
+* client sends coordinate datagrams
+* server receives QUIC datagrams with `connection.read_datagram()`
+* server displays the received coordinate position in the terminal
+* client prints packet number, position, and RTT
+
+Observed example:
+
+* server displayed peer address `10.0.0.2:54545`
+* client sent coordinate packets such as `Pkt 347`, `Pkt 348`, and later packets
+* server displayed current position updates such as `Pos: 141,-160`
+
+Caveat:
+
+* the client reads real mouse input from `/dev/input/mice`
+* this is Linux-specific and may require appropriate environment/permissions
+* for the new `quic-vid` app, fake video frames should use generated frame data instead of OS mouse input
+
+Conclusion:
+
+* `mouse-coordinates` is a working Mininet runtime reference for Quinn datagram send/receive behavior.
 
 ## Legacy/background work
 
