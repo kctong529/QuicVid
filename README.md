@@ -17,7 +17,9 @@ The scope is therefore not “build a production Zoom replacement.” The scope 
 5. compare the result with a simple non-migrating baseline;
 6. log frame disruption, peer address changes, and reconnect/session behavior.
 
-For the detailed project scope, milestone breakdown, runtime modes, and definition of done, see [`PLAN.md`](PLAN.md).
+For the full project plan, see [`PLAN.md`](PLAN.md).
+
+For the current repository status and runnable prototype commands, see [`docs/current-status.md`](docs/current-status.md).
 
 ## Project background
 
