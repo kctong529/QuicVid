@@ -37,7 +37,7 @@ enum Command {
 async fn main() -> anyhow::Result<()> {
     rustls::crypto::ring::default_provider()
         .install_default()
-        .ok();
+        .expect("failed to install rustls ring crypto provider");
 
     let cli = Cli::parse();
 
