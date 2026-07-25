@@ -1,5 +1,6 @@
 mod client;
 mod control;
+mod frame_tracker;
 mod media;
 mod server;
 mod tls;
