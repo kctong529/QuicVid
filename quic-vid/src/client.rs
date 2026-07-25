@@ -1,4 +1,4 @@
-use crate::tls;
+use crate::{control, tls};
 use std::net::SocketAddr;
 use uuid::Uuid;
 
@@ -29,7 +29,7 @@ pub async fn run(connect: SocketAddr, bind: SocketAddr) -> anyhow::Result<()> {
 
     let (mut send, mut recv) = connection.open_bi().await?;
 
-    let hello = format!("HELLO {session_id}\n");
+    let hello = control::hello(session_id);
 
     send.write_all(hello.as_bytes()).await?;
     send.finish()?;
@@ -39,15 +39,7 @@ pub async fn run(connect: SocketAddr, bind: SocketAddr) -> anyhow::Result<()> {
     let response = recv.read_to_end(1024).await?;
     let response = String::from_utf8(response)?;
 
-    let expected = format!("OK {session_id}");
-
-    if response.trim() != expected {
-        anyhow::bail!(
-            "unexpected control response: expected {:?}, got {:?}",
-            expected,
-            response.trim()
-        );
-    }
+    control::validate_acknowledgement(&response, session_id)?;
 
     println!("event=hello_acknowledged session={session_id}");
 

@@ -1,4 +1,5 @@
 mod client;
+mod control;
 mod server;
 mod tls;
 

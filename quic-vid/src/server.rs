@@ -1,4 +1,4 @@
-use crate::tls;
+use crate::{control, tls};
 use quinn::Connection;
 use std::net::SocketAddr;
 
@@ -38,13 +38,7 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
     let request = recv.read_to_end(1024).await?;
     let request = String::from_utf8(request)?;
 
-    let request = request.trim();
-
-    let session_text = request
-        .strip_prefix("HELLO ")
-        .ok_or_else(|| anyhow::anyhow!("invalid control hello: {request:?}"))?;
-
-    let session_id = uuid::Uuid::parse_str(session_text)?;
+    let session_id = control::parse_hello(&request)?;
 
     println!(
         "event=client_hello session={} connection={} peer={}",
@@ -53,7 +47,7 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
         connection.remote_address(),
     );
 
-    let response = format!("OK {session_id}\n");
+    let response = control::acknowledgement(session_id);
 
     send.write_all(response.as_bytes()).await?;
     send.finish()?;
