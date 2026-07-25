@@ -33,10 +33,42 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
         connection.remote_address(),
     );
 
+    let (mut send, mut recv) = connection.accept_bi().await?;
+
+    let request = recv.read_to_end(1024).await?;
+    let request = String::from_utf8(request)?;
+
+    let request = request.trim();
+
+    let session_text = request
+        .strip_prefix("HELLO ")
+        .ok_or_else(|| anyhow::anyhow!("invalid control hello: {request:?}"))?;
+
+    let session_id = uuid::Uuid::parse_str(session_text)?;
+
+    println!(
+        "event=client_hello session={} connection={} peer={}",
+        session_id,
+        connection.stable_id(),
+        connection.remote_address(),
+    );
+
+    let response = format!("OK {session_id}\n");
+
+    send.write_all(response.as_bytes()).await?;
+    send.finish()?;
+
+    println!(
+        "event=hello_acknowledged session={} connection={}",
+        session_id,
+        connection.stable_id(),
+    );
+
     connection.closed().await;
 
     println!(
-        "event=client_disconnected connection={}",
+        "event=client_disconnected session={} connection={}",
+        session_id,
         connection.stable_id(),
     );
 
