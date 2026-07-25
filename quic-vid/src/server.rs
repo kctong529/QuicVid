@@ -1,4 +1,4 @@
-use crate::{control, tls};
+use crate::{control, media::MediaDatagram, tls};
 use quinn::Connection;
 use std::net::SocketAddr;
 
@@ -57,6 +57,7 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
         connection.remote_address(),
     );
 
+    // Initial QuicVid control handshake.
     let (mut send, mut recv) = connection.accept_bi().await?;
 
     let request = recv.read_to_end(1024).await?;
@@ -82,10 +83,41 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
         connection.stable_id(),
     );
 
-    connection.closed().await;
+    // Commit 2: receive exactly one media datagram.
+    let bytes = connection.read_datagram().await?;
+
+    let media = MediaDatagram::decode(&bytes)?;
+
+    if media.session_id != session_id {
+        anyhow::bail!(
+            "media session mismatch: expected {}, got {}",
+            session_id,
+            media.session_id
+        );
+    }
+
+    if media.chunk_index != 0 || media.chunk_count != 1 {
+        anyhow::bail!(
+            "expected single-chunk fake frame, got chunk {}/{}",
+            media.chunk_index,
+            media.chunk_count
+        );
+    }
 
     println!(
-        "event=client_disconnected session={} connection={}",
+        "event=media_datagram_received session={} frame={} chunk={}/{} payload_bytes={} peer={}",
+        session_id,
+        media.frame_id,
+        media.chunk_index,
+        media.chunk_count,
+        media.payload.len(),
+        connection.remote_address(),
+    );
+
+    connection.close(0u32.into(), b"media datagram received");
+
+    println!(
+        "event=client_completed session={} connection={}",
         session_id,
         connection.stable_id(),
     );

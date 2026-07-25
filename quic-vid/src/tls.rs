@@ -5,6 +5,15 @@ use std::sync::Arc;
 
 const ALPN: &[u8] = b"quic-vid";
 
+fn transport_config() -> Arc<quinn::TransportConfig> {
+    let mut transport = quinn::TransportConfig::default();
+
+    transport.datagram_receive_buffer_size(Some(1024 * 1024));
+    transport.datagram_send_buffer_size(1024 * 1024);
+
+    Arc::new(transport)
+}
+
 pub fn client_config() -> anyhow::Result<quinn::ClientConfig> {
     let mut rustls_config = rustls::ClientConfig::builder()
         .dangerous()
@@ -15,7 +24,11 @@ pub fn client_config() -> anyhow::Result<quinn::ClientConfig> {
 
     let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_config)?;
 
-    Ok(quinn::ClientConfig::new(Arc::new(quic_crypto)))
+    let mut config = quinn::ClientConfig::new(Arc::new(quic_crypto));
+
+    config.transport_config(transport_config());
+
+    Ok(config)
 }
 
 pub fn server_config() -> anyhow::Result<quinn::ServerConfig> {
@@ -33,7 +46,11 @@ pub fn server_config() -> anyhow::Result<quinn::ServerConfig> {
 
     let quic_crypto = quinn::crypto::rustls::QuicServerConfig::try_from(rustls_config)?;
 
-    Ok(quinn::ServerConfig::with_crypto(Arc::new(quic_crypto)))
+    let mut config = quinn::ServerConfig::with_crypto(Arc::new(quic_crypto));
+
+    config.transport_config(transport_config());
+
+    Ok(config)
 }
 
 /// Accepts the self-signed development server certificate without
