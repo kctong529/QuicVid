@@ -8,20 +8,44 @@ pub async fn run(listen: SocketAddr) -> anyhow::Result<()> {
 
     println!("event=server_started listen={}", endpoint.local_addr()?);
 
-    while let Some(incoming) = endpoint.accept().await {
-        tokio::spawn(async move {
-            match incoming.await {
-                Ok(connection) => {
-                    if let Err(error) = handle_connection(connection).await {
-                        eprintln!("event=connection_error error={error:#}");
+    loop {
+        tokio::select! {
+            incoming = endpoint.accept() => {
+                match incoming {
+                    Some(incoming) => {
+                        tokio::spawn(async move {
+                            match incoming.await {
+                                Ok(connection) => {
+                                    if let Err(error) = handle_connection(connection).await {
+                                        eprintln!(
+                                            "event=connection_error error={error:#}"
+                                        );
+                                    }
+                                }
+                                Err(error) => {
+                                    eprintln!(
+                                        "event=handshake_failed error={error}"
+                                    );
+                                }
+                            }
+                        });
                     }
-                }
-                Err(error) => {
-                    eprintln!("event=handshake_failed error={error}");
+                    None => break,
                 }
             }
-        });
+
+            result = tokio::signal::ctrl_c() => {
+                result?;
+                println!("event=server_shutdown_requested");
+                break;
+            }
+        }
     }
+
+    endpoint.close(0u32.into(), b"server shutdown");
+    endpoint.wait_idle().await;
+
+    println!("event=server_stopped");
 
     Ok(())
 }
