@@ -55,7 +55,6 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Server { listen } => server::run(listen).await,
-
         Command::Client {
             connect,
             bind,

@@ -27,10 +27,7 @@ impl FrameTracker {
 
         if let Some(previous) = self.last_received_at {
             let gap = received_at.saturating_sub(previous);
-
-            if gap > self.largest_receive_gap {
-                self.largest_receive_gap = gap;
-            }
+            self.largest_receive_gap = self.largest_receive_gap.max(gap);
         }
 
         self.last_received_at = Some(received_at);
@@ -41,22 +38,12 @@ impl FrameTracker {
         }
 
         match self.highest_frame_id {
-            None => {
-                self.highest_frame_id = Some(frame_id);
-            }
-
-            Some(highest) if frame_id < highest => {
-                self.out_of_order += 1;
-            }
-
-            Some(_) => {
-                self.highest_frame_id = Some(frame_id);
-            }
+            None => self.highest_frame_id = Some(frame_id),
+            Some(highest) if frame_id < highest => self.out_of_order += 1,
+            Some(_) => self.highest_frame_id = Some(frame_id),
         }
     }
-}
 
-impl FrameTracker {
     pub fn missing_within_observed_range(&self) -> u64 {
         let Some(highest) = self.highest_frame_id else {
             return 0;
@@ -64,9 +51,21 @@ impl FrameTracker {
 
         (highest + 1).saturating_sub(self.seen.len() as u64)
     }
-}
 
-impl FrameTracker {
+    pub fn missing_from_expected(&self, expected_frames: u64) -> u64 {
+        let received_expected = self
+            .seen
+            .iter()
+            .filter(|&&frame_id| frame_id < expected_frames)
+            .count() as u64;
+
+        expected_frames.saturating_sub(received_expected)
+    }
+
+    pub fn has_received_all_expected(&self, expected_frames: u64) -> bool {
+        self.missing_from_expected(expected_frames) == 0
+    }
+
     pub fn summary(&self) -> FrameSummary {
         FrameSummary {
             received: self.received,
@@ -112,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn detects_out_of_order_frame() {
+    fn detects_out_of_order_frame_and_fills_gap() {
         let mut tracker = FrameTracker::default();
 
         tracker.record(0, Duration::from_millis(0));
@@ -153,5 +152,28 @@ mod tests {
             tracker.summary().largest_receive_gap,
             Duration::from_millis(55)
         );
+    }
+
+    #[test]
+    fn expected_count_detects_trailing_loss() {
+        let mut tracker = FrameTracker::default();
+
+        tracker.record(0, Duration::from_millis(0));
+        tracker.record(1, Duration::from_millis(20));
+        tracker.record(2, Duration::from_millis(40));
+
+        assert_eq!(tracker.missing_from_expected(5), 2);
+        assert!(!tracker.has_received_all_expected(5));
+    }
+
+    #[test]
+    fn frames_outside_expected_range_do_not_hide_missing_frames() {
+        let mut tracker = FrameTracker::default();
+
+        tracker.record(0, Duration::from_millis(0));
+        tracker.record(1, Duration::from_millis(20));
+        tracker.record(99, Duration::from_millis(40));
+
+        assert_eq!(tracker.missing_from_expected(3), 1);
     }
 }

@@ -53,8 +53,8 @@ pub async fn run(
         connection.remote_address(),
     );
 
+    // Initial QuicVid control handshake.
     let (mut send, mut recv) = connection.open_bi().await?;
-
     let hello = control::hello(session_id);
 
     send.write_all(hello.as_bytes()).await?;
@@ -97,9 +97,7 @@ pub async fn run(
     );
 
     let frame_interval = Duration::from_secs_f64(1.0 / f64::from(fps));
-
     let mut ticker = tokio::time::interval(frame_interval);
-
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     let mut sent = 0u64;
@@ -117,9 +115,7 @@ pub async fn run(
         };
 
         let encoded = media.encode()?;
-
         connection.send_datagram(encoded.into())?;
-
         sent += 1;
 
         println!(
@@ -133,12 +129,33 @@ pub async fn run(
     }
 
     println!(
-        "event=fake_video_send_complete session={} sent={}",
+        "event=fake_video_send_summary session={} sent={} fps={} duration_seconds={} payload_size={}",
+        session_id, sent, fps, duration_seconds, payload_size,
+    );
+
+    // Send the authoritative final frame count on a second control stream.
+    let (mut done_send, mut done_recv) = connection.open_bi().await?;
+    let done = control::done(session_id, sent);
+
+    done_send.write_all(done.as_bytes()).await?;
+    done_send.finish()?;
+
+    println!(
+        "event=fake_video_done_sent session={} frames={}",
+        session_id, sent,
+    );
+
+    let response = done_recv.read_to_end(1024).await?;
+    let response = String::from_utf8(response)?;
+
+    control::validate_done_acknowledgement(&response, session_id)?;
+
+    println!(
+        "event=fake_video_done_acknowledged session={} frames={}",
         session_id, sent,
     );
 
     connection.close(0u32.into(), b"fake video complete");
-
     endpoint.wait_idle().await;
 
     println!("event=client_stopped session={session_id}");
@@ -148,7 +165,6 @@ pub async fn run(
 
 fn unix_time_ms() -> anyhow::Result<u64> {
     let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)?;
-
     Ok(elapsed.as_millis().try_into()?)
 }
 
