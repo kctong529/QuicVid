@@ -83,41 +83,64 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
         connection.stable_id(),
     );
 
-    // Commit 2: receive exactly one media datagram.
-    let bytes = connection.read_datagram().await?;
+    loop {
+        match connection.read_datagram().await {
+            Ok(bytes) => {
+                let media = match MediaDatagram::decode(&bytes) {
+                    Ok(media) => media,
 
-    let media = MediaDatagram::decode(&bytes)?;
+                    Err(error) => {
+                        eprintln!(
+                            "event=media_datagram_invalid connection={} error={error:#}",
+                            connection.stable_id(),
+                        );
 
-    if media.session_id != session_id {
-        anyhow::bail!(
-            "media session mismatch: expected {}, got {}",
-            session_id,
-            media.session_id
-        );
-    }
+                        continue;
+                    }
+                };
 
-    if media.chunk_index != 0 || media.chunk_count != 1 {
-        anyhow::bail!(
-            "expected single-chunk fake frame, got chunk {}/{}",
-            media.chunk_index,
-            media.chunk_count
-        );
+                if media.session_id != session_id {
+                    eprintln!(
+                        "event=media_session_mismatch expected={} got={} frame={}",
+                        session_id, media.session_id, media.frame_id,
+                    );
+
+                    continue;
+                }
+
+                if media.chunk_index != 0 || media.chunk_count != 1 {
+                    eprintln!(
+                        "event=fake_frame_chunk_invalid session={} frame={} chunk={}/{}",
+                        session_id, media.frame_id, media.chunk_index, media.chunk_count,
+                    );
+
+                    continue;
+                }
+
+                println!(
+                    "event=fake_frame_received session={} frame={} chunk={}/{} payload_bytes={} peer={}",
+                    session_id,
+                    media.frame_id,
+                    media.chunk_index,
+                    media.chunk_count,
+                    media.payload.len(),
+                    connection.remote_address(),
+                );
+            }
+
+            Err(error) => {
+                println!(
+                    "event=media_receive_finished session={} reason={}",
+                    session_id, error,
+                );
+
+                break;
+            }
+        }
     }
 
     println!(
-        "event=media_datagram_received session={} frame={} chunk={}/{} payload_bytes={} peer={}",
-        session_id,
-        media.frame_id,
-        media.chunk_index,
-        media.chunk_count,
-        media.payload.len(),
-        connection.remote_address(),
-    );
-
-    connection.close(0u32.into(), b"media datagram received");
-
-    println!(
-        "event=client_completed session={} connection={}",
+        "event=client_disconnected session={} connection={}",
         session_id,
         connection.stable_id(),
     );

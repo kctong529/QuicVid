@@ -32,6 +32,15 @@ enum Command {
         /// Local UDP address used by the Quinn endpoint.
         #[arg(long, default_value = "0.0.0.0:0")]
         bind: SocketAddr,
+
+        #[arg(long, default_value_t = 30)]
+        fps: u32,
+
+        #[arg(long, default_value_t = 10)]
+        duration_seconds: u64,
+
+        #[arg(long, default_value_t = 256)]
+        payload_size: usize,
     },
 }
 
@@ -45,6 +54,13 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Server { listen } => server::run(listen).await,
-        Command::Client { connect, bind } => client::run(connect, bind).await,
+
+        Command::Client {
+            connect,
+            bind,
+            fps,
+            duration_seconds,
+            payload_size,
+        } => client::run(connect, bind, fps, duration_seconds, payload_size).await,
     }
 }

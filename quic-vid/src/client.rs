@@ -1,10 +1,34 @@
-use crate::media::MediaDatagram;
+use crate::media::{MediaDatagram, MEDIA_HEADER_SIZE};
 use crate::{control, tls};
 use std::net::SocketAddr;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
-pub async fn run(connect: SocketAddr, bind: SocketAddr) -> anyhow::Result<()> {
+pub async fn run(
+    connect: SocketAddr,
+    bind: SocketAddr,
+    fps: u32,
+    duration_seconds: u64,
+    payload_size: usize,
+) -> anyhow::Result<()> {
+    if fps == 0 {
+        anyhow::bail!("fps must be greater than zero");
+    }
+
+    if duration_seconds == 0 {
+        anyhow::bail!("duration-seconds must be greater than zero");
+    }
+
+    let total_frames = u64::from(fps)
+        .checked_mul(duration_seconds)
+        .ok_or_else(|| anyhow::anyhow!("fake-video frame count overflow"))?;
+
+    println!(
+        "event=fake_video_config fps={} duration_seconds={} payload_size={} expected_frames={}",
+        fps, duration_seconds, payload_size, total_frames,
+    );
+
     let mut endpoint = quinn::Endpoint::client(bind)?;
     endpoint.set_default_client_config(tls::client_config()?);
 
@@ -49,47 +73,71 @@ pub async fn run(connect: SocketAddr, bind: SocketAddr) -> anyhow::Result<()> {
         .max_datagram_size()
         .ok_or_else(|| anyhow::anyhow!("QUIC DATAGRAM support is unavailable"))?;
 
-    println!(
-        "event=datagram_transport_ready session={} max_datagram_size={}",
-        session_id, max_datagram_size,
-    );
+    let max_payload_size = max_datagram_size
+        .checked_sub(MEDIA_HEADER_SIZE)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "QUIC DATAGRAM maximum {} is smaller than the {}-byte media header",
+                max_datagram_size,
+                MEDIA_HEADER_SIZE
+            )
+        })?;
 
-    let media = MediaDatagram {
-        session_id,
-        frame_id: 0,
-        sent_at_ms: unix_time_ms()?,
-        chunk_index: 0,
-        chunk_count: 1,
-        payload: vec![0x42; 32],
-    };
-
-    let encoded = media.encode()?;
-
-    if encoded.len() > max_datagram_size {
+    if payload_size > max_payload_size {
         anyhow::bail!(
-            "media datagram is too large: {} bytes, current maximum is {}",
-            encoded.len(),
-            max_datagram_size
+            "payload size {} exceeds current single-datagram media payload limit {}",
+            payload_size,
+            max_payload_size
         );
     }
 
-    connection.send_datagram(encoded.into())?;
-
     println!(
-        "event=media_datagram_sent session={} frame={} chunk={}/{} payload_bytes={}",
-        session_id,
-        media.frame_id,
-        media.chunk_index,
-        media.chunk_count,
-        media.payload.len(),
+        "event=datagram_transport_ready session={} max_datagram_size={} max_payload_size={}",
+        session_id, max_datagram_size, max_payload_size,
     );
 
-    let close_reason = connection.closed().await;
+    let frame_interval = Duration::from_secs_f64(1.0 / f64::from(fps));
+
+    let mut ticker = tokio::time::interval(frame_interval);
+
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    let mut sent = 0u64;
+
+    for frame_id in 0..total_frames {
+        ticker.tick().await;
+
+        let media = MediaDatagram {
+            session_id,
+            frame_id,
+            sent_at_ms: unix_time_ms()?,
+            chunk_index: 0,
+            chunk_count: 1,
+            payload: fake_payload(frame_id, payload_size),
+        };
+
+        let encoded = media.encode()?;
+
+        connection.send_datagram(encoded.into())?;
+
+        sent += 1;
+
+        println!(
+            "event=fake_frame_sent session={} frame={} chunk={}/{} payload_bytes={}",
+            session_id,
+            media.frame_id,
+            media.chunk_index,
+            media.chunk_count,
+            media.payload.len(),
+        );
+    }
 
     println!(
-        "event=server_closed_connection session={} reason={}",
-        session_id, close_reason,
+        "event=fake_video_send_complete session={} sent={}",
+        session_id, sent,
     );
+
+    connection.close(0u32.into(), b"fake video complete");
 
     endpoint.wait_idle().await;
 
@@ -102,4 +150,23 @@ fn unix_time_ms() -> anyhow::Result<u64> {
     let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)?;
 
     Ok(elapsed.as_millis().try_into()?)
+}
+
+fn fake_payload(frame_id: u64, payload_size: usize) -> Vec<u8> {
+    vec![(frame_id & 0xff) as u8; payload_size]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fake_payload_uses_low_byte_of_frame_id() {
+        assert_eq!(fake_payload(258, 4), vec![2, 2, 2, 2]);
+    }
+
+    #[test]
+    fn fake_payload_has_requested_size() {
+        assert_eq!(fake_payload(42, 256).len(), 256);
+    }
 }
