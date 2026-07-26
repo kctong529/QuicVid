@@ -1,7 +1,8 @@
-use image::{Rgb, RgbImage};
+use image::{codecs::jpeg::JpegEncoder, Rgb, RgbImage};
 
 pub const TEST_FRAME_WIDTH: u32 = 640;
 pub const TEST_FRAME_HEIGHT: u32 = 360;
+pub const DEFAULT_JPEG_QUALITY: u8 = 70;
 
 const DIGIT_SEGMENTS: [[bool; 7]; 10] = [
     [true, true, true, false, true, true, true],     // 0
@@ -104,6 +105,27 @@ fn draw_progress_marker(image: &mut RgbImage, frame_id: u64) {
     draw_rect(image, x, 315, marker_width, 24, Rgb([255, 255, 255]));
 }
 
+pub fn encode_jpeg(image: &RgbImage, quality: u8) -> anyhow::Result<Vec<u8>> {
+    if !(1..=100).contains(&quality) {
+        anyhow::bail!("JPEG quality must be between 1 and 100");
+    }
+
+    let mut encoded = Vec::new();
+
+    {
+        let mut encoder = JpegEncoder::new_with_quality(&mut encoded, quality);
+
+        encoder.encode_image(image)?;
+    }
+
+    Ok(encoded)
+}
+
+pub fn generate_jpeg_frame(frame_id: u64, quality: u8) -> anyhow::Result<Vec<u8>> {
+    let image = generate_test_pattern(frame_id);
+    encode_jpeg(&image, quality)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +154,42 @@ mod tests {
 
         assert_eq!(first.as_raw(), second.as_raw());
     }
+
+    #[test]
+    fn generated_jpeg_decodes() {
+        use image::GenericImageView;
+
+        let jpeg = generate_jpeg_frame(42, DEFAULT_JPEG_QUALITY).unwrap();
+
+        let decoded = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg).unwrap();
+
+        assert_eq!(decoded.dimensions(), (TEST_FRAME_WIDTH, TEST_FRAME_HEIGHT));
+    }
+
+    #[test]
+    fn generated_jpeg_has_jpeg_signature() {
+        let jpeg = generate_jpeg_frame(42, DEFAULT_JPEG_QUALITY).unwrap();
+
+        assert!(jpeg.starts_with(&[0xff, 0xd8]));
+        assert!(jpeg.ends_with(&[0xff, 0xd9]));
+    }
+
+    #[test]
+    fn invalid_jpeg_quality_is_rejected() {
+        let frame = generate_test_pattern(0);
+
+        assert!(encode_jpeg(&frame, 0).is_err());
+        assert!(encode_jpeg(&frame, 101).is_err());
+    }
+
+    #[test]
+    fn different_frames_produce_different_jpegs() {
+        let first = generate_jpeg_frame(42, DEFAULT_JPEG_QUALITY).unwrap();
+
+        let second = generate_jpeg_frame(43, DEFAULT_JPEG_QUALITY).unwrap();
+
+        assert_ne!(first, second);
+    }
 }
 
 #[test]
@@ -151,4 +209,20 @@ fn writes_test_pattern_preview() {
         .expect("failed to write RGB pixels");
 
     println!("preview written to {}", path.display());
+}
+
+#[test]
+#[ignore = "manual JPEG visual inspection helper"]
+fn writes_jpeg_preview() {
+    let jpeg = generate_jpeg_frame(42, DEFAULT_JPEG_QUALITY).expect("failed to generate JPEG");
+
+    let path = std::env::temp_dir().join("quicvid-test-pattern-42.jpg");
+
+    std::fs::write(&path, &jpeg).expect("failed to write JPEG preview");
+
+    println!(
+        "JPEG preview written to {} jpeg_bytes={}",
+        path.display(),
+        jpeg.len()
+    );
 }
