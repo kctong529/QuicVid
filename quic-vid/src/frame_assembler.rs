@@ -1,4 +1,5 @@
 use crate::media::MediaDatagram;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -100,6 +101,57 @@ impl PartialFrame {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CompletedFrame {
+    pub session_id: Uuid,
+    pub frame_id: u64,
+    pub sent_at_ms: u64,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
+pub struct FrameAssembler {
+    frames: HashMap<u64, PartialFrame>,
+}
+
+impl FrameAssembler {
+    pub fn push(&mut self, media: MediaDatagram) -> anyhow::Result<Option<CompletedFrame>> {
+        let frame_id = media.frame_id;
+
+        let complete = {
+            let partial = self
+                .frames
+                .entry(frame_id)
+                .or_insert_with(|| PartialFrame::new(&media));
+
+            partial.insert(media)?;
+            partial.is_complete()
+        };
+
+        if !complete {
+            return Ok(None);
+        }
+
+        let partial = self
+            .frames
+            .remove(&frame_id)
+            .expect("completed frame must still exist");
+
+        let bytes = partial.reassemble()?;
+
+        Ok(Some(CompletedFrame {
+            session_id: partial.session_id,
+            frame_id: partial.frame_id,
+            sent_at_ms: partial.sent_at_ms,
+            bytes,
+        }))
+    }
+
+    pub fn incomplete_frame_count(&self) -> usize {
+        self.frames.len()
     }
 }
 
@@ -265,5 +317,119 @@ mod tests {
         frame.insert(first).unwrap();
 
         assert!(frame.insert(invalid).is_err());
+    }
+
+    #[test]
+    fn assembler_emits_completed_frame() {
+        let session_id = Uuid::new_v4();
+
+        let first = chunk(session_id, 42, 0, 2, &[1, 2]);
+
+        let second = chunk(session_id, 42, 1, 2, &[3, 4]);
+
+        let mut assembler = FrameAssembler::default();
+
+        assert!(assembler.push(first).unwrap().is_none());
+
+        let completed = assembler.push(second).unwrap().unwrap();
+
+        assert_eq!(completed.session_id, session_id);
+        assert_eq!(completed.frame_id, 42);
+        assert_eq!(completed.sent_at_ms, 123_456);
+        assert_eq!(completed.bytes, vec![1, 2, 3, 4]);
+
+        assert_eq!(assembler.incomplete_frame_count(), 0);
+    }
+
+    #[test]
+    fn assembler_handles_interleaved_frames() {
+        let session_id = Uuid::new_v4();
+
+        let frame_10_chunk_0 = chunk(session_id, 10, 0, 2, &[1]);
+
+        let frame_11_chunk_0 = chunk(session_id, 11, 0, 2, &[3]);
+
+        let frame_10_chunk_1 = chunk(session_id, 10, 1, 2, &[2]);
+
+        let frame_11_chunk_1 = chunk(session_id, 11, 1, 2, &[4]);
+
+        let mut assembler = FrameAssembler::default();
+
+        assert!(assembler.push(frame_10_chunk_0).unwrap().is_none());
+
+        assert!(assembler.push(frame_11_chunk_0).unwrap().is_none());
+
+        assert_eq!(assembler.incomplete_frame_count(), 2);
+
+        let frame_10 = assembler.push(frame_10_chunk_1).unwrap().unwrap();
+
+        assert_eq!(frame_10.frame_id, 10);
+        assert_eq!(frame_10.bytes, vec![1, 2]);
+
+        assert_eq!(assembler.incomplete_frame_count(), 1);
+
+        let frame_11 = assembler.push(frame_11_chunk_1).unwrap().unwrap();
+
+        assert_eq!(frame_11.frame_id, 11);
+        assert_eq!(frame_11.bytes, vec![3, 4]);
+
+        assert_eq!(assembler.incomplete_frame_count(), 0);
+    }
+
+    #[test]
+    fn assembler_handles_out_of_order_chunks() {
+        let session_id = Uuid::new_v4();
+
+        let chunk_0 = chunk(session_id, 42, 0, 3, &[1]);
+
+        let chunk_1 = chunk(session_id, 42, 1, 3, &[2]);
+
+        let chunk_2 = chunk(session_id, 42, 2, 3, &[3]);
+
+        let mut assembler = FrameAssembler::default();
+
+        assert!(assembler.push(chunk_2).unwrap().is_none());
+        assert!(assembler.push(chunk_0).unwrap().is_none());
+
+        let completed = assembler.push(chunk_1).unwrap().unwrap();
+
+        assert_eq!(completed.bytes, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn assembler_tolerates_duplicate_chunk_before_completion() {
+        let session_id = Uuid::new_v4();
+
+        let first = chunk(session_id, 42, 0, 2, &[1]);
+
+        let duplicate = chunk(session_id, 42, 0, 2, &[9]);
+
+        let second = chunk(session_id, 42, 1, 2, &[2]);
+
+        let mut assembler = FrameAssembler::default();
+
+        assert!(assembler.push(first).unwrap().is_none());
+        assert!(assembler.push(duplicate).unwrap().is_none());
+
+        let completed = assembler.push(second).unwrap().unwrap();
+
+        assert_eq!(completed.bytes, vec![1, 2]);
+    }
+
+    #[test]
+    fn assembler_rejects_inconsistent_frame_metadata() {
+        let session_id = Uuid::new_v4();
+
+        let first = chunk(session_id, 42, 0, 2, &[1]);
+
+        let mut inconsistent = chunk(session_id, 42, 1, 2, &[2]);
+
+        inconsistent.sent_at_ms = 999_999;
+
+        let mut assembler = FrameAssembler::default();
+
+        assert!(assembler.push(first).unwrap().is_none());
+
+        assert!(assembler.push(inconsistent).is_err());
     }
 }
