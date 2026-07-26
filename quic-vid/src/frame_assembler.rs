@@ -1,5 +1,8 @@
 use crate::media::MediaDatagram;
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -122,6 +125,7 @@ pub struct CompletedFrame {
 #[derive(Debug, Default)]
 pub struct FrameAssembler {
     frames: HashMap<u64, PartialFrame>,
+    completed_frames: HashSet<u64>,
 }
 
 impl FrameAssembler {
@@ -131,6 +135,10 @@ impl FrameAssembler {
         received_at: Duration,
     ) -> anyhow::Result<Option<CompletedFrame>> {
         let frame_id = media.frame_id;
+
+        if self.completed_frames.contains(&frame_id) {
+            return Ok(None);
+        }
 
         let complete = {
             let partial = self
@@ -153,6 +161,8 @@ impl FrameAssembler {
             .expect("completed frame must still exist");
 
         let bytes = partial.reassemble()?;
+
+        self.completed_frames.insert(frame_id);
 
         Ok(Some(CompletedFrame {
             session_id: partial.session_id,
@@ -636,6 +646,87 @@ mod tests {
             assembler.discard_stale(Duration::from_millis(600), Duration::from_millis(500));
 
         assert_eq!(removed, 1);
+        assert_eq!(assembler.incomplete_frame_count(), 0);
+    }
+
+    #[test]
+    fn late_chunk_for_completed_frame_is_ignored() {
+        let session_id = Uuid::new_v4();
+
+        let first = chunk(session_id, 42, 0, 2, &[1]);
+
+        let second = chunk(session_id, 42, 1, 2, &[2]);
+
+        let late_duplicate = chunk(session_id, 42, 0, 2, &[1]);
+
+        let mut assembler = FrameAssembler::default();
+
+        assert!(assembler
+            .push(first, Duration::from_millis(100))
+            .unwrap()
+            .is_none());
+
+        let completed = assembler.push(second, Duration::from_millis(200)).unwrap();
+
+        assert!(completed.is_some());
+        assert_eq!(assembler.incomplete_frame_count(), 0);
+
+        let result = assembler
+            .push(late_duplicate, Duration::from_millis(300))
+            .unwrap();
+
+        assert!(result.is_none());
+        assert_eq!(assembler.incomplete_frame_count(), 0);
+    }
+
+    #[test]
+    fn completed_frame_history_does_not_block_new_frames() {
+        let session_id = Uuid::new_v4();
+
+        let frame_42 = chunk(session_id, 42, 0, 1, &[1]);
+
+        let frame_43 = chunk(session_id, 43, 0, 1, &[2]);
+
+        let mut assembler = FrameAssembler::default();
+
+        let completed_42 = assembler
+            .push(frame_42, Duration::from_millis(100))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(completed_42.frame_id, 42);
+
+        let completed_43 = assembler
+            .push(frame_43, Duration::from_millis(200))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(completed_43.frame_id, 43);
+        assert_eq!(completed_43.bytes, vec![2]);
+    }
+
+    #[test]
+    fn repeated_late_chunks_do_not_create_partial_state() {
+        let session_id = Uuid::new_v4();
+
+        let complete = chunk(session_id, 42, 0, 1, &[1]);
+
+        let mut assembler = FrameAssembler::default();
+
+        assert!(assembler
+            .push(complete, Duration::from_millis(100),)
+            .unwrap()
+            .is_some());
+
+        for received_at in [200, 300, 400] {
+            let late = chunk(session_id, 42, 0, 1, &[1]);
+
+            assert!(assembler
+                .push(late, Duration::from_millis(received_at),)
+                .unwrap()
+                .is_none());
+        }
+
         assert_eq!(assembler.incomplete_frame_count(), 0);
     }
 }
