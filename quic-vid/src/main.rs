@@ -3,6 +3,8 @@ mod control;
 mod frame_assembler;
 mod frame_tracker;
 mod media;
+#[cfg(test)]
+mod preview;
 mod server;
 mod test_pattern;
 mod tls;
