@@ -1,3 +1,5 @@
+use minifb::{Key, Window, WindowOptions};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviewFrame {
     pub frame_id: u64,
@@ -29,6 +31,41 @@ pub fn preview_frame_from_jpeg(frame_id: u64, jpeg: &[u8]) -> anyhow::Result<Pre
         height,
         pixels,
     })
+}
+
+pub fn show_preview_frame(frame: &PreviewFrame) -> anyhow::Result<()> {
+    validate_preview_frame(frame)?;
+
+    let title = format!("QuicVid Receiver — frame {:06}", frame.frame_id);
+
+    let mut window = Window::new(&title, frame.width, frame.height, WindowOptions::default())?;
+
+    window.set_target_fps(60);
+
+    while window.is_open() && !window.is_key_down(Key::Escape) {
+        window.update_with_buffer(&frame.pixels, frame.width, frame.height)?;
+    }
+
+    Ok(())
+}
+
+fn validate_preview_frame(frame: &PreviewFrame) -> anyhow::Result<()> {
+    let expected_pixels = frame
+        .width
+        .checked_mul(frame.height)
+        .ok_or_else(|| anyhow::anyhow!("preview dimensions overflow"))?;
+
+    if frame.pixels.len() != expected_pixels {
+        anyhow::bail!(
+            "preview buffer size mismatch: expected {} pixels for {}x{}, got {}",
+            expected_pixels,
+            frame.width,
+            frame.height,
+            frame.pixels.len(),
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -121,5 +158,29 @@ mod tests {
         let frame = preview_frame_from_jpeg(7, &jpeg).unwrap();
 
         assert_eq!(frame.pixels.len(), frame.width * frame.height);
+    }
+
+    #[test]
+    fn preview_frame_rejects_wrong_buffer_size() {
+        let frame = PreviewFrame {
+            frame_id: 42,
+            width: 2,
+            height: 2,
+            pixels: vec![0; 3],
+        };
+
+        assert!(validate_preview_frame(&frame).is_err());
+    }
+
+    #[test]
+    fn preview_frame_accepts_matching_buffer_size() {
+        let frame = PreviewFrame {
+            frame_id: 42,
+            width: 2,
+            height: 2,
+            pixels: vec![0; 4],
+        };
+
+        assert!(validate_preview_frame(&frame).is_ok());
     }
 }

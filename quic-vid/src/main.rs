@@ -3,7 +3,6 @@ mod control;
 mod frame_assembler;
 mod frame_tracker;
 mod media;
-#[cfg(test)]
 mod preview;
 mod server;
 mod test_pattern;
@@ -68,6 +67,20 @@ enum Command {
         )]
         quality: u8,
     },
+
+    /// Open one generated test frame in the live preview window.
+    PreviewTestFrame {
+        /// Logical frame ID to preview.
+        #[arg(long, default_value_t = 42)]
+        frame_id: u64,
+
+        /// JPEG quality from 1 to 100.
+        #[arg(
+            long,
+            default_value_t = test_pattern::DEFAULT_JPEG_QUALITY
+        )]
+        quality: u8,
+    },
 }
 
 #[tokio::main]
@@ -95,6 +108,16 @@ async fn main() -> anyhow::Result<()> {
             quality,
         } => {
             test_pattern::write_preview_frames(&output, count, quality)?;
+
+            Ok(())
+        }
+
+        Command::PreviewTestFrame { frame_id, quality } => {
+            let jpeg = test_pattern::generate_jpeg_frame(frame_id, quality)?;
+
+            let frame = preview::preview_frame_from_jpeg(frame_id, &jpeg)?;
+
+            preview::show_preview_frame(&frame)?;
 
             Ok(())
         }
