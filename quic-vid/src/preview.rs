@@ -6,6 +6,31 @@ pub struct PreviewFrame {
     pub pixels: Vec<u32>,
 }
 
+pub fn preview_frame_from_jpeg(frame_id: u64, jpeg: &[u8]) -> anyhow::Result<PreviewFrame> {
+    let image = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg)?;
+
+    let rgb = image.to_rgb8();
+
+    let width: usize = rgb.width().try_into()?;
+    let height: usize = rgb.height().try_into()?;
+
+    let pixels = rgb
+        .pixels()
+        .map(|pixel| {
+            let [red, green, blue] = pixel.0;
+
+            (u32::from(red) << 16) | (u32::from(green) << 8) | u32::from(blue)
+        })
+        .collect();
+
+    Ok(PreviewFrame {
+        frame_id,
+        width,
+        height,
+        pixels,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -36,5 +61,65 @@ mod tests {
         };
 
         assert_eq!(frame.pixels, pixels);
+    }
+
+    #[test]
+    fn generated_jpeg_converts_to_preview_frame() {
+        let jpeg =
+            crate::test_pattern::generate_jpeg_frame(42, crate::test_pattern::DEFAULT_JPEG_QUALITY)
+                .unwrap();
+
+        let frame = preview_frame_from_jpeg(42, &jpeg).unwrap();
+
+        assert_eq!(frame.frame_id, 42);
+        assert_eq!(frame.width, 640);
+        assert_eq!(frame.height, 360);
+        assert_eq!(frame.pixels.len(), 640 * 360);
+    }
+
+    #[test]
+    fn invalid_jpeg_is_rejected() {
+        assert!(preview_frame_from_jpeg(42, b"not a jpeg",).is_err());
+    }
+
+    #[test]
+    fn preview_pixels_use_rgb_channel_order() {
+        use image::{codecs::jpeg::JpegEncoder, Rgb, RgbImage};
+
+        let mut image = RgbImage::new(1, 1);
+        image.put_pixel(0, 0, Rgb([255, 0, 0]));
+
+        let mut jpeg = Vec::new();
+
+        {
+            let mut encoder = JpegEncoder::new_with_quality(&mut jpeg, 100);
+
+            encoder.encode_image(&image).unwrap();
+        }
+
+        let frame = preview_frame_from_jpeg(1, &jpeg).unwrap();
+
+        assert_eq!(frame.width, 1);
+        assert_eq!(frame.height, 1);
+
+        let pixel = frame.pixels[0];
+
+        let red = (pixel >> 16) & 0xff;
+        let green = (pixel >> 8) & 0xff;
+        let blue = pixel & 0xff;
+
+        assert!(red > green);
+        assert!(red > blue);
+    }
+
+    #[test]
+    fn preview_buffer_matches_frame_dimensions() {
+        let jpeg =
+            crate::test_pattern::generate_jpeg_frame(7, crate::test_pattern::DEFAULT_JPEG_QUALITY)
+                .unwrap();
+
+        let frame = preview_frame_from_jpeg(7, &jpeg).unwrap();
+
+        assert_eq!(frame.pixels.len(), frame.width * frame.height);
     }
 }
