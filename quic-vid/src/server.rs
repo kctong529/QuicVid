@@ -1,9 +1,12 @@
+use crate::test_pattern::{TEST_FRAME_HEIGHT, TEST_FRAME_WIDTH};
 use crate::{
     control, frame_assembler::FrameAssembler, frame_tracker::FrameTracker, media::MediaDatagram,
     tls,
 };
+use image::GenericImageView;
 use quinn::Connection;
 use std::{net::SocketAddr, time::Duration};
+
 use uuid::Uuid;
 
 const POST_DONE_DRAIN: Duration = Duration::from_millis(200);
@@ -203,6 +206,24 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_jpeg_frame(bytes: &[u8]) -> anyhow::Result<(u32, u32)> {
+    let image = image::load_from_memory_with_format(bytes, image::ImageFormat::Jpeg)?;
+
+    let dimensions = image.dimensions();
+
+    if dimensions != (TEST_FRAME_WIDTH, TEST_FRAME_HEIGHT) {
+        anyhow::bail!(
+            "unexpected JPEG dimensions: expected {}x{}, got {}x{}",
+            TEST_FRAME_WIDTH,
+            TEST_FRAME_HEIGHT,
+            dimensions.0,
+            dimensions.1,
+        );
+    }
+
+    Ok(dimensions)
+}
+
 fn handle_media_datagram(
     bytes: &[u8],
     session_id: Uuid,
@@ -242,6 +263,21 @@ fn handle_media_datagram(
 
     match assembler.push(media, received_at) {
         Ok(Some(frame)) => {
+            let (width, height) = match validate_jpeg_frame(&frame.bytes) {
+                Ok(dimensions) => dimensions,
+
+                Err(error) => {
+                    eprintln!(
+                        "event=jpeg_frame_invalid session={} frame={} jpeg_bytes={} error={error:#}",
+                        frame.session_id,
+                        frame.frame_id,
+                        frame.bytes.len(),
+                    );
+
+                    return;
+                }
+            };
+
             tracker.record(frame.frame_id, received_at);
 
             println!(
@@ -251,6 +287,15 @@ fn handle_media_datagram(
                 frame.bytes.len(),
                 frame.sent_at_ms,
                 connection.remote_address(),
+            );
+
+            println!(
+                "event=jpeg_frame_validated session={} frame={} width={} height={} jpeg_bytes={}",
+                frame.session_id,
+                frame.frame_id,
+                width,
+                height,
+                frame.bytes.len(),
             );
         }
 
@@ -274,5 +319,26 @@ fn handle_media_datagram(
             expired,
             assembler.incomplete_frame_count(),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_generated_jpeg_frame() {
+        let jpeg =
+            crate::test_pattern::generate_jpeg_frame(42, crate::test_pattern::DEFAULT_JPEG_QUALITY)
+                .unwrap();
+
+        let dimensions = validate_jpeg_frame(&jpeg).unwrap();
+
+        assert_eq!(dimensions, (TEST_FRAME_WIDTH, TEST_FRAME_HEIGHT));
+    }
+
+    #[test]
+    fn rejects_non_jpeg_bytes() {
+        assert!(validate_jpeg_frame(b"not a jpeg").is_err());
     }
 }
