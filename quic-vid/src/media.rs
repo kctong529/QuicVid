@@ -3,7 +3,6 @@ use uuid::Uuid;
 pub const MEDIA_DATAGRAM_TYPE: u8 = 0x01;
 pub const MEDIA_HEADER_SIZE: usize = 37;
 
-#[cfg(test)]
 fn required_chunk_count(frame_size: usize, max_chunk_payload: usize) -> anyhow::Result<u16> {
     if max_chunk_payload == 0 {
         anyhow::bail!("maximum chunk payload must be greater than zero");
@@ -24,7 +23,6 @@ fn required_chunk_count(frame_size: usize, max_chunk_payload: usize) -> anyhow::
     })
 }
 
-#[cfg(test)]
 pub fn fragment_frame(
     session_id: Uuid,
     frame_id: u64,

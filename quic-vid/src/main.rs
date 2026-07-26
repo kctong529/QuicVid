@@ -37,14 +37,17 @@ enum Command {
         #[arg(long, default_value = "0.0.0.0:0")]
         bind: SocketAddr,
 
-        #[arg(long, default_value_t = 30)]
+        #[arg(long, default_value_t = 10)]
         fps: u32,
 
         #[arg(long, default_value_t = 10)]
         duration_seconds: u64,
 
-        #[arg(long, default_value_t = 256)]
-        payload_size: usize,
+        #[arg(
+            long,
+            default_value_t = test_pattern::DEFAULT_JPEG_QUALITY
+        )]
+        jpeg_quality: u8,
     },
 
     /// Generate JPEG test-pattern frames for inspection.
@@ -82,8 +85,8 @@ async fn main() -> anyhow::Result<()> {
             bind,
             fps,
             duration_seconds,
-            payload_size,
-        } => client::run(connect, bind, fps, duration_seconds, payload_size).await,
+            jpeg_quality,
+        } => client::run(connect, bind, fps, duration_seconds, jpeg_quality).await,
 
         Command::GenerateTestFrames {
             count,

@@ -1,5 +1,5 @@
-use crate::media::{MediaDatagram, MEDIA_HEADER_SIZE};
-use crate::{control, tls};
+use crate::media::{fragment_frame, MEDIA_HEADER_SIZE};
+use crate::{control, test_pattern, tls};
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::MissedTickBehavior;
@@ -10,7 +10,7 @@ pub async fn run(
     bind: SocketAddr,
     fps: u32,
     duration_seconds: u64,
-    payload_size: usize,
+    jpeg_quality: u8,
 ) -> anyhow::Result<()> {
     if fps == 0 {
         anyhow::bail!("fps must be greater than zero");
@@ -20,13 +20,17 @@ pub async fn run(
         anyhow::bail!("duration-seconds must be greater than zero");
     }
 
+    if !(1..=100).contains(&jpeg_quality) {
+        anyhow::bail!("JPEG quality must be between 1 and 100");
+    }
+
     let total_frames = u64::from(fps)
         .checked_mul(duration_seconds)
         .ok_or_else(|| anyhow::anyhow!("fake-video frame count overflow"))?;
 
     println!(
-        "event=fake_video_config fps={} duration_seconds={} payload_size={} expected_frames={}",
-        fps, duration_seconds, payload_size, total_frames,
+        "event=jpeg_video_config fps={} duration_seconds={} jpeg_quality={} expected_frames={}",
+        fps, duration_seconds, jpeg_quality, total_frames,
     );
 
     let mut endpoint = quinn::Endpoint::client(bind)?;
@@ -83,14 +87,6 @@ pub async fn run(
             )
         })?;
 
-    if payload_size > max_payload_size {
-        anyhow::bail!(
-            "payload size {} exceeds current single-datagram media payload limit {}",
-            payload_size,
-            max_payload_size
-        );
-    }
-
     println!(
         "event=datagram_transport_ready session={} max_datagram_size={} max_payload_size={}",
         session_id, max_datagram_size, max_payload_size,
@@ -100,49 +96,66 @@ pub async fn run(
     let mut ticker = tokio::time::interval(frame_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-    let mut sent = 0u64;
+    let mut sent_frames = 0u64;
+    let mut sent_datagrams = 0u64;
 
     for frame_id in 0..total_frames {
         ticker.tick().await;
 
-        let media = MediaDatagram {
-            session_id,
-            frame_id,
-            sent_at_ms: unix_time_ms()?,
-            chunk_index: 0,
-            chunk_count: 1,
-            payload: fake_payload(frame_id, payload_size),
-        };
+        let jpeg = test_pattern::generate_jpeg_frame(frame_id, jpeg_quality)?;
 
-        let encoded = media.encode()?;
-        connection.send_datagram(encoded.into())?;
-        sent += 1;
+        let sent_at_ms = unix_time_ms()?;
+
+        let chunks = fragment_frame(session_id, frame_id, sent_at_ms, &jpeg, max_payload_size)?;
 
         println!(
-            "event=fake_frame_sent session={} frame={} chunk={}/{} payload_bytes={}",
+            "event=jpeg_frame_encoded session={} frame={} jpeg_bytes={} chunks={}",
             session_id,
-            media.frame_id,
-            media.chunk_index,
-            media.chunk_count,
-            media.payload.len(),
+            frame_id,
+            jpeg.len(),
+            chunks.len(),
         );
+
+        for media in chunks {
+            let encoded = media.encode()?;
+
+            connection.send_datagram(encoded.into())?;
+
+            sent_datagrams += 1;
+
+            println!(
+                "event=media_chunk_sent session={} frame={} chunk={}/{} payload_bytes={}",
+                session_id,
+                media.frame_id,
+                media.chunk_index,
+                media.chunk_count,
+                media.payload.len(),
+            );
+        }
+
+        sent_frames += 1;
     }
 
     println!(
-        "event=fake_video_send_summary session={} sent={} fps={} duration_seconds={} payload_size={}",
-        session_id, sent, fps, duration_seconds, payload_size,
+        "event=jpeg_video_send_summary session={} frames={} datagrams={} fps={} duration_seconds={} jpeg_quality={}",
+        session_id,
+        sent_frames,
+        sent_datagrams,
+        fps,
+        duration_seconds,
+        jpeg_quality,
     );
 
     // Send the authoritative final frame count on a second control stream.
     let (mut done_send, mut done_recv) = connection.open_bi().await?;
-    let done = control::done(session_id, sent);
+    let done = control::done(session_id, sent_frames);
 
     done_send.write_all(done.as_bytes()).await?;
     done_send.finish()?;
 
     println!(
-        "event=fake_video_done_sent session={} frames={}",
-        session_id, sent,
+        "event=jpeg_video_done_sent session={} frames={}",
+        session_id, sent_frames,
     );
 
     let response = done_recv.read_to_end(1024).await?;
@@ -151,11 +164,10 @@ pub async fn run(
     control::validate_done_acknowledgement(&response, session_id)?;
 
     println!(
-        "event=fake_video_done_acknowledged session={} frames={}",
-        session_id, sent,
+        "event=jpeg_video_done_acknowledged session={} frames={}",
+        session_id, sent_frames,
     );
-
-    connection.close(0u32.into(), b"fake video complete");
+    connection.close(0u32.into(), b"JPEG video complete");
     endpoint.wait_idle().await;
 
     println!("event=client_stopped session={session_id}");
@@ -166,23 +178,4 @@ pub async fn run(
 fn unix_time_ms() -> anyhow::Result<u64> {
     let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)?;
     Ok(elapsed.as_millis().try_into()?)
-}
-
-fn fake_payload(frame_id: u64, payload_size: usize) -> Vec<u8> {
-    vec![(frame_id & 0xff) as u8; payload_size]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fake_payload_uses_low_byte_of_frame_id() {
-        assert_eq!(fake_payload(258, 4), vec![2, 2, 2, 2]);
-    }
-
-    #[test]
-    fn fake_payload_has_requested_size() {
-        assert_eq!(fake_payload(42, 256).len(), 256);
-    }
 }
