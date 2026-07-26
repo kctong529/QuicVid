@@ -1,4 +1,6 @@
 use minifb::{Key, Window, WindowOptions};
+#[cfg(test)]
+use tokio::sync::watch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviewFrame {
@@ -6,6 +8,35 @@ pub struct PreviewFrame {
     pub width: usize,
     pub height: usize,
     pub pixels: Vec<u32>,
+}
+
+#[cfg(test)]
+pub type PreviewSender = watch::Sender<Option<PreviewFrame>>;
+
+#[cfg(test)]
+pub type PreviewReceiver = watch::Receiver<Option<PreviewFrame>>;
+
+#[cfg(test)]
+pub fn channel() -> (PreviewSender, PreviewReceiver) {
+    watch::channel(None)
+}
+
+#[cfg(test)]
+pub fn publish(sender: &PreviewSender, frame: PreviewFrame) -> anyhow::Result<()> {
+    sender
+        .send(Some(frame))
+        .map_err(|_| anyhow::anyhow!("preview receiver has closed"))?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+pub fn take_latest_if_changed(receiver: &mut PreviewReceiver) -> Option<PreviewFrame> {
+    if !receiver.has_changed().ok()? {
+        return None;
+    }
+
+    receiver.borrow_and_update().clone()
 }
 
 pub fn preview_frame_from_jpeg(frame_id: u64, jpeg: &[u8]) -> anyhow::Result<PreviewFrame> {
@@ -182,5 +213,87 @@ mod tests {
         };
 
         assert!(validate_preview_frame(&frame).is_ok());
+    }
+
+    #[test]
+    fn preview_channel_starts_empty() {
+        let (_sender, receiver) = channel();
+
+        assert!(receiver.borrow().is_none());
+    }
+
+    #[test]
+    fn published_frame_becomes_latest() {
+        let (sender, mut receiver) = channel();
+
+        let frame = PreviewFrame {
+            frame_id: 42,
+            width: 1,
+            height: 1,
+            pixels: vec![0x00112233],
+        };
+
+        publish(&sender, frame.clone()).unwrap();
+
+        assert_eq!(take_latest_if_changed(&mut receiver), Some(frame));
+    }
+
+    #[test]
+    fn unchanged_preview_is_not_returned_twice() {
+        let (sender, mut receiver) = channel();
+
+        let frame = PreviewFrame {
+            frame_id: 42,
+            width: 1,
+            height: 1,
+            pixels: vec![0],
+        };
+
+        publish(&sender, frame).unwrap();
+
+        assert!(take_latest_if_changed(&mut receiver).is_some());
+
+        assert!(take_latest_if_changed(&mut receiver).is_none());
+    }
+
+    #[test]
+    fn preview_channel_keeps_only_latest_frame() {
+        let (sender, mut receiver) = channel();
+
+        for frame_id in 40..=46 {
+            publish(
+                &sender,
+                PreviewFrame {
+                    frame_id,
+                    width: 1,
+                    height: 1,
+                    pixels: vec![frame_id as u32],
+                },
+            )
+            .unwrap();
+        }
+
+        let latest = take_latest_if_changed(&mut receiver).unwrap();
+
+        assert_eq!(latest.frame_id, 46);
+    }
+
+    #[test]
+    fn publishing_after_receiver_closes_returns_error() {
+        let (sender, receiver) = channel();
+
+        drop(receiver);
+
+        let result = publish(
+            &sender,
+            PreviewFrame {
+                frame_id: 42,
+                width: 1,
+                height: 1,
+                pixels: vec![0],
+            },
+        );
+
+        assert!(result.is_err());
     }
 }
