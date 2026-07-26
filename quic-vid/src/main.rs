@@ -25,6 +25,10 @@ enum Command {
     Server {
         #[arg(long, default_value = "0.0.0.0:4433")]
         listen: SocketAddr,
+
+        /// Show received video in a live preview window.
+        #[arg(long)]
+        preview: bool,
     },
 
     /// Run the QuicVid client.
@@ -110,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Server { listen } => server::run(listen).await,
+        Command::Server { listen, preview } => server::run(listen, preview).await,
 
         Command::Client {
             connect,

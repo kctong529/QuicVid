@@ -12,7 +12,23 @@ use uuid::Uuid;
 const POST_DONE_DRAIN: Duration = Duration::from_millis(200);
 const FRAME_ASSEMBLY_TIMEOUT: Duration = Duration::from_secs(1);
 
-pub async fn run(listen: SocketAddr) -> anyhow::Result<()> {
+pub async fn run(listen: SocketAddr, preview_enabled: bool) -> anyhow::Result<()> {
+    let preview_sender = if preview_enabled {
+        let (sender, receiver) = crate::preview::channel();
+
+        std::thread::spawn(move || {
+            if let Err(error) = crate::preview::show_preview_stream(receiver) {
+                eprintln!("preview stopped: {error}");
+            }
+        });
+
+        Some(sender)
+    } else {
+        None
+    };
+
+    println!("server_preview enabled={}", preview_sender.is_some());
+
     let server_config = tls::server_config()?;
     let endpoint = quinn::Endpoint::server(server_config, listen)?;
 
