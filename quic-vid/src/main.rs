@@ -1,6 +1,5 @@
 mod client;
 mod control;
-#[cfg(test)]
 mod frame_assembler;
 mod frame_tracker;
 mod media;

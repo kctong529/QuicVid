@@ -1,9 +1,13 @@
-use crate::{control, frame_tracker::FrameTracker, media::MediaDatagram, tls};
+use crate::{
+    control, frame_assembler::FrameAssembler, frame_tracker::FrameTracker, media::MediaDatagram,
+    tls,
+};
 use quinn::Connection;
 use std::{net::SocketAddr, time::Duration};
 use uuid::Uuid;
 
 const POST_DONE_DRAIN: Duration = Duration::from_millis(200);
+const FRAME_ASSEMBLY_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub async fn run(listen: SocketAddr) -> anyhow::Result<()> {
     let server_config = tls::server_config()?;
@@ -81,6 +85,7 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
 
     let session_started = std::time::Instant::now();
     let mut tracker = FrameTracker::default();
+    let mut assembler = FrameAssembler::default();
 
     // Receive media until the client opens the second control stream with DONE.
     let (expected_frames, mut done_send) = loop {
@@ -92,6 +97,7 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
                             &bytes,
                             session_id,
                             &connection,
+                            &mut assembler,
                             &mut tracker,
                             session_started.elapsed(),
                         );
@@ -117,7 +123,7 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
                 }
 
                 println!(
-                    "event=fake_video_done session={} expected_frames={}",
+                    "event=jpeg_video_done session={} expected_frames={}",
                     session_id,
                     expected_frames,
                 );
@@ -145,6 +151,7 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
                                 &bytes,
                                 session_id,
                                 &connection,
+                                &mut assembler,
                                 &mut tracker,
                                 session_started.elapsed(),
                             );
@@ -160,13 +167,13 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
         }
     }
 
-    println!("event=fake_video_drain_complete session={session_id}");
+    println!("event=jpeg_video_drain_complete session={session_id}");
 
     let summary = tracker.summary();
     let missing = tracker.missing_from_expected(expected_frames);
 
     println!(
-        "event=fake_video_receive_summary session={} expected={} received={} unique={} missing={} out_of_order={} duplicates={} largest_gap_ms={}",
+    "event=jpeg_video_receive_summary session={} expected={} received={} unique={} missing={} out_of_order={} duplicates={} largest_gap_ms={} incomplete_frames={}",
         session_id,
         expected_frames,
         summary.received,
@@ -175,13 +182,14 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
         summary.out_of_order,
         summary.duplicates,
         summary.largest_receive_gap.as_millis(),
+        assembler.incomplete_frame_count(),
     );
 
     let response = control::done_acknowledgement(session_id);
     done_send.write_all(response.as_bytes()).await?;
     done_send.finish()?;
 
-    println!("event=fake_video_done_acknowledged session={session_id}");
+    println!("event=jpeg_video_done_acknowledged session={session_id}");
 
     let close_reason = connection.closed().await;
 
@@ -199,6 +207,7 @@ fn handle_media_datagram(
     bytes: &[u8],
     session_id: Uuid,
     connection: &Connection,
+    assembler: &mut FrameAssembler,
     tracker: &mut FrameTracker,
     received_at: Duration,
 ) {
@@ -221,18 +230,8 @@ fn handle_media_datagram(
         return;
     }
 
-    if media.chunk_index != 0 || media.chunk_count != 1 {
-        eprintln!(
-            "event=fake_frame_chunk_invalid session={} frame={} chunk={}/{}",
-            session_id, media.frame_id, media.chunk_index, media.chunk_count,
-        );
-        return;
-    }
-
-    tracker.record(media.frame_id, received_at);
-
     println!(
-        "event=fake_frame_received session={} frame={} chunk={}/{} payload_bytes={} peer={}",
+        "event=media_chunk_received session={} frame={} chunk={}/{} payload_bytes={} peer={}",
         session_id,
         media.frame_id,
         media.chunk_index,
@@ -240,4 +239,40 @@ fn handle_media_datagram(
         media.payload.len(),
         connection.remote_address(),
     );
+
+    match assembler.push(media, received_at) {
+        Ok(Some(frame)) => {
+            tracker.record(frame.frame_id, received_at);
+
+            println!(
+                "event=jpeg_frame_reassembled session={} frame={} jpeg_bytes={} sent_at_ms={} peer={}",
+                frame.session_id,
+                frame.frame_id,
+                frame.bytes.len(),
+                frame.sent_at_ms,
+                connection.remote_address(),
+            );
+        }
+
+        Ok(None) => {}
+
+        Err(error) => {
+            eprintln!(
+                "event=frame_reassembly_error session={} connection={} error={error:#}",
+                session_id,
+                connection.stable_id(),
+            );
+        }
+    }
+
+    let expired = assembler.discard_stale(received_at, FRAME_ASSEMBLY_TIMEOUT);
+
+    if expired > 0 {
+        println!(
+            "event=incomplete_frames_expired session={} count={} remaining={}",
+            session_id,
+            expired,
+            assembler.incomplete_frame_count(),
+        );
+    }
 }
