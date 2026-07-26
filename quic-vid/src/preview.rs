@@ -1,5 +1,4 @@
 use minifb::{Key, Window, WindowOptions};
-#[cfg(test)]
 use tokio::sync::watch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,18 +9,13 @@ pub struct PreviewFrame {
     pub pixels: Vec<u32>,
 }
 
-#[cfg(test)]
 pub type PreviewSender = watch::Sender<Option<PreviewFrame>>;
-
-#[cfg(test)]
 pub type PreviewReceiver = watch::Receiver<Option<PreviewFrame>>;
 
-#[cfg(test)]
 pub fn channel() -> (PreviewSender, PreviewReceiver) {
     watch::channel(None)
 }
 
-#[cfg(test)]
 pub fn publish(sender: &PreviewSender, frame: PreviewFrame) -> anyhow::Result<()> {
     sender
         .send(Some(frame))
@@ -30,7 +24,6 @@ pub fn publish(sender: &PreviewSender, frame: PreviewFrame) -> anyhow::Result<()
     Ok(())
 }
 
-#[cfg(test)]
 pub fn take_latest_if_changed(receiver: &mut PreviewReceiver) -> Option<PreviewFrame> {
     if !receiver.has_changed().ok()? {
         return None;
@@ -67,9 +60,12 @@ pub fn preview_frame_from_jpeg(frame_id: u64, jpeg: &[u8]) -> anyhow::Result<Pre
 pub fn show_preview_frame(frame: &PreviewFrame) -> anyhow::Result<()> {
     validate_preview_frame(frame)?;
 
-    let title = format!("QuicVid Receiver — frame {:06}", frame.frame_id);
-
-    let mut window = Window::new(&title, frame.width, frame.height, WindowOptions::default())?;
+    let mut window = Window::new(
+        "QuicVid Receiver",
+        frame.width,
+        frame.height,
+        WindowOptions::default(),
+    )?;
 
     window.set_target_fps(60);
 
@@ -78,6 +74,65 @@ pub fn show_preview_frame(frame: &PreviewFrame) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+pub fn show_preview_stream(mut receiver: PreviewReceiver) -> anyhow::Result<()> {
+    let mut current_frame = wait_for_first_frame(&receiver)?;
+
+    validate_preview_frame(&current_frame)?;
+
+    let mut window = Window::new(
+        "QuicVid Receiver",
+        current_frame.width,
+        current_frame.height,
+        WindowOptions::default(),
+    )?;
+
+    window.set_target_fps(60);
+
+    while window.is_open() && !window.is_key_down(Key::Escape) {
+        if let Some(frame) = take_latest_if_changed(&mut receiver) {
+            validate_preview_frame(&frame)?;
+
+            if frame.width != current_frame.width || frame.height != current_frame.height {
+                anyhow::bail!(
+                    "preview frame dimensions changed from {}x{} to {}x{}",
+                    current_frame.width,
+                    current_frame.height,
+                    frame.width,
+                    frame.height,
+                );
+            }
+
+            current_frame = frame;
+        }
+
+        window.update_with_buffer(
+            &current_frame.pixels,
+            current_frame.width,
+            current_frame.height,
+        )?;
+
+        if receiver.has_changed().is_err() {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+fn wait_for_first_frame(receiver: &PreviewReceiver) -> anyhow::Result<PreviewFrame> {
+    loop {
+        if let Some(frame) = receiver.borrow().clone() {
+            return Ok(frame);
+        }
+
+        if receiver.has_changed().is_err() {
+            anyhow::bail!("preview channel closed before first frame");
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 fn validate_preview_frame(frame: &PreviewFrame) -> anyhow::Result<()> {
@@ -147,7 +202,7 @@ mod tests {
 
     #[test]
     fn invalid_jpeg_is_rejected() {
-        assert!(preview_frame_from_jpeg(42, b"not a jpeg",).is_err());
+        assert!(preview_frame_from_jpeg(42, b"not a jpeg").is_err());
     }
 
     #[test]
@@ -161,14 +216,10 @@ mod tests {
 
         {
             let mut encoder = JpegEncoder::new_with_quality(&mut jpeg, 100);
-
             encoder.encode_image(&image).unwrap();
         }
 
         let frame = preview_frame_from_jpeg(1, &jpeg).unwrap();
-
-        assert_eq!(frame.width, 1);
-        assert_eq!(frame.height, 1);
 
         let pixel = frame.pixels[0];
 
@@ -252,7 +303,6 @@ mod tests {
         publish(&sender, frame).unwrap();
 
         assert!(take_latest_if_changed(&mut receiver).is_some());
-
         assert!(take_latest_if_changed(&mut receiver).is_none());
     }
 

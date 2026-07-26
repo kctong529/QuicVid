@@ -68,11 +68,29 @@ enum Command {
         quality: u8,
     },
 
-    /// Open one generated test frame in the live preview window.
+    /// Open one generated test frame in the preview window.
     PreviewTestFrame {
         /// Logical frame ID to preview.
         #[arg(long, default_value_t = 42)]
         frame_id: u64,
+
+        /// JPEG quality from 1 to 100.
+        #[arg(
+            long,
+            default_value_t = test_pattern::DEFAULT_JPEG_QUALITY
+        )]
+        quality: u8,
+    },
+
+    /// Show an animated generated test stream in the preview window.
+    PreviewTestStream {
+        /// Frames generated per second.
+        #[arg(long, default_value_t = 10)]
+        fps: u32,
+
+        /// Number of seconds to generate.
+        #[arg(long, default_value_t = 10)]
+        duration_seconds: u64,
 
         /// JPEG quality from 1 to 100.
         #[arg(
@@ -108,18 +126,83 @@ async fn main() -> anyhow::Result<()> {
             quality,
         } => {
             test_pattern::write_preview_frames(&output, count, quality)?;
-
             Ok(())
         }
 
         Command::PreviewTestFrame { frame_id, quality } => {
             let jpeg = test_pattern::generate_jpeg_frame(frame_id, quality)?;
-
             let frame = preview::preview_frame_from_jpeg(frame_id, &jpeg)?;
 
             preview::show_preview_frame(&frame)?;
 
             Ok(())
         }
+
+        Command::PreviewTestStream {
+            fps,
+            duration_seconds,
+            quality,
+        } => run_preview_test_stream(fps, duration_seconds, quality),
     }
+}
+
+fn run_preview_test_stream(fps: u32, duration_seconds: u64, quality: u8) -> anyhow::Result<()> {
+    if fps == 0 {
+        anyhow::bail!("fps must be greater than zero");
+    }
+
+    if duration_seconds == 0 {
+        anyhow::bail!("duration-seconds must be greater than zero");
+    }
+
+    if !(1..=100).contains(&quality) {
+        anyhow::bail!("JPEG quality must be between 1 and 100");
+    }
+
+    let total_frames = u64::from(fps)
+        .checked_mul(duration_seconds)
+        .ok_or_else(|| anyhow::anyhow!("preview frame count overflow"))?;
+
+    let (sender, receiver) = preview::channel();
+
+    let producer = std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        let frame_interval = 1.0 / f64::from(fps);
+
+        let mut last_frame_id = None;
+
+        loop {
+            let elapsed = start.elapsed().as_secs_f64();
+
+            let frame_id = (elapsed / frame_interval).floor() as u64;
+
+            if frame_id >= total_frames {
+                break;
+            }
+
+            if last_frame_id == Some(frame_id) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                continue;
+            }
+
+            last_frame_id = Some(frame_id);
+
+            let jpeg = test_pattern::generate_jpeg_frame(frame_id, quality)?;
+            let frame = preview::preview_frame_from_jpeg(frame_id, &jpeg)?;
+
+            if preview::publish(&sender, frame).is_err() {
+                break;
+            }
+        }
+
+        Ok::<(), anyhow::Error>(())
+    });
+
+    let preview_result = preview::show_preview_stream(receiver);
+
+    producer
+        .join()
+        .map_err(|_| anyhow::anyhow!("preview producer thread panicked"))??;
+
+    preview_result
 }
