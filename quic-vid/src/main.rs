@@ -3,7 +3,6 @@ mod control;
 mod frame_tracker;
 mod media;
 mod server;
-#[cfg(test)]
 mod test_pattern;
 mod tls;
 
@@ -45,6 +44,24 @@ enum Command {
         #[arg(long, default_value_t = 256)]
         payload_size: usize,
     },
+
+    /// Generate JPEG test-pattern frames for inspection.
+    GenerateTestFrames {
+        /// Number of frames to generate.
+        #[arg(long, default_value_t = 3)]
+        count: u64,
+
+        /// Output directory for generated JPEG frames.
+        #[arg(long, default_value = "test-frames")]
+        output: std::path::PathBuf,
+
+        /// JPEG quality from 1 to 100.
+        #[arg(
+            long,
+            default_value_t = test_pattern::DEFAULT_JPEG_QUALITY
+        )]
+        quality: u8,
+    },
 }
 
 #[tokio::main]
@@ -57,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Server { listen } => server::run(listen).await,
+
         Command::Client {
             connect,
             bind,
@@ -64,5 +82,15 @@ async fn main() -> anyhow::Result<()> {
             duration_seconds,
             payload_size,
         } => client::run(connect, bind, fps, duration_seconds, payload_size).await,
+
+        Command::GenerateTestFrames {
+            count,
+            output,
+            quality,
+        } => {
+            test_pattern::write_preview_frames(&output, count, quality)?;
+
+            Ok(())
+        }
     }
 }

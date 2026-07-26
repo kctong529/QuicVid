@@ -1,4 +1,5 @@
 use image::{codecs::jpeg::JpegEncoder, Rgb, RgbImage};
+use std::path::Path;
 
 pub const TEST_FRAME_WIDTH: u32 = 640;
 pub const TEST_FRAME_HEIGHT: u32 = 360;
@@ -126,6 +127,31 @@ pub fn generate_jpeg_frame(frame_id: u64, quality: u8) -> anyhow::Result<Vec<u8>
     encode_jpeg(&image, quality)
 }
 
+pub fn write_preview_frames(output_dir: &Path, count: u64, quality: u8) -> anyhow::Result<()> {
+    if count == 0 {
+        anyhow::bail!("frame count must be greater than zero");
+    }
+
+    std::fs::create_dir_all(output_dir)?;
+
+    for frame_id in 0..count {
+        let jpeg = generate_jpeg_frame(frame_id, quality)?;
+
+        let path = output_dir.join(format!("frame-{frame_id:06}.jpg"));
+
+        std::fs::write(&path, &jpeg)?;
+
+        println!(
+            "event=test_frame_generated frame={} jpeg_bytes={} path={}",
+            frame_id,
+            jpeg.len(),
+            path.display(),
+        );
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,4 +251,26 @@ fn writes_jpeg_preview() {
         path.display(),
         jpeg.len()
     );
+}
+
+#[test]
+fn preview_writer_creates_expected_files() {
+    let output = std::env::temp_dir().join(format!("quicvid-preview-test-{}", std::process::id()));
+
+    let _ = std::fs::remove_dir_all(&output);
+
+    write_preview_frames(&output, 2, DEFAULT_JPEG_QUALITY).unwrap();
+
+    assert!(output.join("frame-000000.jpg").exists());
+
+    assert!(output.join("frame-000001.jpg").exists());
+
+    std::fs::remove_dir_all(&output).unwrap();
+}
+
+#[test]
+fn preview_writer_rejects_zero_frames() {
+    let output = std::env::temp_dir().join("quicvid-zero-preview-test");
+
+    assert!(write_preview_frames(&output, 0, DEFAULT_JPEG_QUALITY,).is_err());
 }

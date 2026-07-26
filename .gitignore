@@ -46,3 +46,5 @@ tmp/
 # Local external dependency checkouts
 /quiche/
 /external/quiche/
+
+**/test-frames/
