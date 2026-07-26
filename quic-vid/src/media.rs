@@ -3,6 +3,27 @@ use uuid::Uuid;
 pub const MEDIA_DATAGRAM_TYPE: u8 = 0x01;
 pub const MEDIA_HEADER_SIZE: usize = 37;
 
+#[cfg(test)]
+fn required_chunk_count(frame_size: usize, max_chunk_payload: usize) -> anyhow::Result<u16> {
+    if max_chunk_payload == 0 {
+        anyhow::bail!("maximum chunk payload must be greater than zero");
+    }
+
+    if frame_size == 0 {
+        anyhow::bail!("media frame must not be empty");
+    }
+
+    let chunk_count = frame_size.div_ceil(max_chunk_payload);
+
+    chunk_count.try_into().map_err(|_| {
+        anyhow::anyhow!(
+            "frame requires {} chunks, exceeding maximum supported chunk count {}",
+            chunk_count,
+            u16::MAX
+        )
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaDatagram {
     pub session_id: Uuid,
@@ -177,5 +198,52 @@ mod tests {
         assert_eq!(decoded.chunk_index, 0);
         assert_eq!(decoded.chunk_count, 1);
         assert_eq!(decoded.payload.len(), 256);
+    }
+
+    #[test]
+    fn one_byte_frame_requires_one_chunk() {
+        assert_eq!(required_chunk_count(1, 1251).unwrap(), 1);
+    }
+
+    #[test]
+    fn frame_at_payload_limit_requires_one_chunk() {
+        assert_eq!(required_chunk_count(1251, 1251).unwrap(), 1);
+    }
+
+    #[test]
+    fn frame_over_payload_limit_requires_two_chunks() {
+        assert_eq!(required_chunk_count(1252, 1251).unwrap(), 2);
+    }
+
+    #[test]
+    fn exact_two_chunk_frame_requires_two_chunks() {
+        assert_eq!(required_chunk_count(2502, 1251).unwrap(), 2);
+    }
+
+    #[test]
+    fn frame_over_two_chunk_boundary_requires_three_chunks() {
+        assert_eq!(required_chunk_count(2503, 1251).unwrap(), 3);
+    }
+
+    #[test]
+    fn measured_jpeg_requires_twelve_chunks() {
+        assert_eq!(required_chunk_count(13_839, 1251).unwrap(), 12);
+    }
+
+    #[test]
+    fn zero_chunk_payload_is_rejected() {
+        assert!(required_chunk_count(100, 0).is_err());
+    }
+
+    #[test]
+    fn empty_frame_is_rejected() {
+        assert!(required_chunk_count(0, 1251).is_err());
+    }
+
+    #[test]
+    fn chunk_count_larger_than_u16_is_rejected() {
+        let frame_size = usize::from(u16::MAX) + 1;
+
+        assert!(required_chunk_count(frame_size, 1).is_err());
     }
 }
