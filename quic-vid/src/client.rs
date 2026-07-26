@@ -2,7 +2,6 @@ use crate::media::{fragment_frame, MEDIA_HEADER_SIZE};
 use crate::{control, test_pattern, tls};
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 pub async fn run(
@@ -92,15 +91,27 @@ pub async fn run(
         session_id, max_datagram_size, max_payload_size,
     );
 
-    let frame_interval = Duration::from_secs_f64(1.0 / f64::from(fps));
-    let mut ticker = tokio::time::interval(frame_interval);
-    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let frame_interval = 1.0 / f64::from(fps);
+    let video_started = tokio::time::Instant::now();
 
     let mut sent_frames = 0u64;
     let mut sent_datagrams = 0u64;
+    let mut last_frame_id = None;
 
-    for frame_id in 0..total_frames {
-        ticker.tick().await;
+    loop {
+        let elapsed = video_started.elapsed().as_secs_f64();
+        let frame_id = (elapsed / frame_interval).floor() as u64;
+
+        if frame_id >= total_frames {
+            break;
+        }
+
+        if last_frame_id == Some(frame_id) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            continue;
+        }
+
+        last_frame_id = Some(frame_id);
 
         let jpeg = test_pattern::generate_jpeg_frame(frame_id, jpeg_quality)?;
 

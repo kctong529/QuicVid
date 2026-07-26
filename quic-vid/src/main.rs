@@ -114,7 +114,13 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Server { listen, preview } => server::run(listen, preview).await,
+        Command::Server { listen, preview } => {
+            if preview {
+                run_server_with_preview(listen)
+            } else {
+                server::run(listen, None).await
+            }
+        }
 
         Command::Client {
             connect,
@@ -192,9 +198,13 @@ fn run_preview_test_stream(fps: u32, duration_seconds: u64, quality: u8) -> anyh
             last_frame_id = Some(frame_id);
 
             let jpeg = test_pattern::generate_jpeg_frame(frame_id, quality)?;
-            let frame = preview::preview_frame_from_jpeg(frame_id, &jpeg)?;
 
-            if preview::publish(&sender, frame).is_err() {
+            let preview_jpeg = preview::PreviewJpeg {
+                frame_id,
+                bytes: jpeg,
+            };
+
+            if preview::publish(&sender, preview_jpeg).is_err() {
                 break;
             }
         }
@@ -209,4 +219,23 @@ fn run_preview_test_stream(fps: u32, duration_seconds: u64, quality: u8) -> anyh
         .map_err(|_| anyhow::anyhow!("preview producer thread panicked"))??;
 
     preview_result
+}
+
+fn run_server_with_preview(listen: SocketAddr) -> anyhow::Result<()> {
+    let (preview_sender, preview_receiver) = preview::channel();
+
+    let server_thread = std::thread::spawn(move || -> anyhow::Result<()> {
+        let runtime = tokio::runtime::Runtime::new()?;
+
+        runtime.block_on(server::run(listen, Some(preview_sender)))
+    });
+
+    let preview_result = preview::show_preview_stream(preview_receiver);
+
+    let server_result = server_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("server thread panicked"))?;
+
+    preview_result?;
+    server_result
 }

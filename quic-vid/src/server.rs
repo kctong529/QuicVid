@@ -1,3 +1,4 @@
+use crate::preview::{PreviewJpeg, PreviewSender};
 use crate::test_pattern::{TEST_FRAME_HEIGHT, TEST_FRAME_WIDTH};
 use crate::{
     control, frame_assembler::FrameAssembler, frame_tracker::FrameTracker, media::MediaDatagram,
@@ -6,27 +7,12 @@ use crate::{
 use image::GenericImageView;
 use quinn::Connection;
 use std::{net::SocketAddr, time::Duration};
-
 use uuid::Uuid;
 
 const POST_DONE_DRAIN: Duration = Duration::from_millis(200);
 const FRAME_ASSEMBLY_TIMEOUT: Duration = Duration::from_secs(1);
 
-pub async fn run(listen: SocketAddr, preview_enabled: bool) -> anyhow::Result<()> {
-    let preview_sender = if preview_enabled {
-        let (sender, receiver) = crate::preview::channel();
-
-        std::thread::spawn(move || {
-            if let Err(error) = crate::preview::show_preview_stream(receiver) {
-                eprintln!("preview stopped: {error}");
-            }
-        });
-
-        Some(sender)
-    } else {
-        None
-    };
-
+pub async fn run(listen: SocketAddr, preview_sender: Option<PreviewSender>) -> anyhow::Result<()> {
     println!("server_preview enabled={}", preview_sender.is_some());
 
     let server_config = tls::server_config()?;
@@ -39,26 +25,41 @@ pub async fn run(listen: SocketAddr, preview_enabled: bool) -> anyhow::Result<()
             incoming = endpoint.accept() => {
                 match incoming {
                     Some(incoming) => {
+                        let connection_preview_sender = preview_sender.clone();
+
                         tokio::spawn(async move {
                             match incoming.await {
                                 Ok(connection) => {
-                                    if let Err(error) = handle_connection(connection).await {
-                                        eprintln!("event=connection_error error={error:#}");
+                                    if let Err(error) =
+                                        handle_connection(
+                                            connection,
+                                            connection_preview_sender,
+                                        ).await
+                                    {
+                                        eprintln!(
+                                            "event=connection_error error={error:#}"
+                                        );
                                     }
                                 }
+
                                 Err(error) => {
-                                    eprintln!("event=handshake_failed error={error}");
+                                    eprintln!(
+                                        "event=handshake_failed error={error}"
+                                    );
                                 }
                             }
                         });
                     }
+
                     None => break,
                 }
             }
 
             result = tokio::signal::ctrl_c() => {
                 result?;
+
                 println!("event=server_shutdown_requested");
+
                 break;
             }
         }
@@ -72,14 +73,16 @@ pub async fn run(listen: SocketAddr, preview_enabled: bool) -> anyhow::Result<()
     Ok(())
 }
 
-async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
+async fn handle_connection(
+    connection: Connection,
+    preview_sender: Option<PreviewSender>,
+) -> anyhow::Result<()> {
     println!(
         "event=client_connected connection={} peer={}",
         connection.stable_id(),
         connection.remote_address(),
     );
 
-    // Initial QuicVid control handshake.
     let (mut send, mut recv) = connection.accept_bi().await?;
     let request = recv.read_to_end(1024).await?;
     let request = String::from_utf8(request)?;
@@ -106,7 +109,6 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
     let mut tracker = FrameTracker::default();
     let mut assembler = FrameAssembler::default();
 
-    // Receive media until the client opens the second control stream with DONE.
     let (expected_frames, mut done_send) = loop {
         tokio::select! {
             datagram = connection.read_datagram() => {
@@ -119,10 +121,14 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
                             &mut assembler,
                             &mut tracker,
                             session_started.elapsed(),
+                            preview_sender.as_ref(),
                         );
                     }
+
                     Err(error) => {
-                        anyhow::bail!("media receive failed before DONE: {error}");
+                        anyhow::bail!(
+                            "media receive failed before DONE: {error}"
+                        );
                     }
                 }
             }
@@ -131,7 +137,8 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
                 let (send, mut recv) = control_stream?;
                 let request = recv.read_to_end(1024).await?;
                 let request = String::from_utf8(request)?;
-                let (done_session_id, expected_frames) = control::parse_done(&request)?;
+                let (done_session_id, expected_frames) =
+                    control::parse_done(&request)?;
 
                 if done_session_id != session_id {
                     anyhow::bail!(
@@ -152,8 +159,6 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
         }
     };
 
-    // Streams and DATAGRAMs do not provide cross-type ordering. Give any final
-    // in-flight media a short chance to arrive before declaring it missing.
     if !tracker.has_received_all_expected(expected_frames) {
         let drain_deadline = tokio::time::Instant::now() + POST_DONE_DRAIN;
 
@@ -173,8 +178,10 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
                                 &mut assembler,
                                 &mut tracker,
                                 session_started.elapsed(),
+                                preview_sender.as_ref(),
                             );
                         }
+
                         Err(_) => break,
                     }
                 }
@@ -192,7 +199,7 @@ async fn handle_connection(connection: Connection) -> anyhow::Result<()> {
     let missing = tracker.missing_from_expected(expected_frames);
 
     println!(
-    "event=jpeg_video_receive_summary session={} expected={} received={} unique={} missing={} out_of_order={} duplicates={} largest_gap_ms={} incomplete_frames={}",
+        "event=jpeg_video_receive_summary session={} expected={} received={} unique={} missing={} out_of_order={} duplicates={} largest_gap_ms={} incomplete_frames={}",
         session_id,
         expected_frames,
         summary.received,
@@ -247,14 +254,17 @@ fn handle_media_datagram(
     assembler: &mut FrameAssembler,
     tracker: &mut FrameTracker,
     received_at: Duration,
+    preview_sender: Option<&PreviewSender>,
 ) {
     let media = match MediaDatagram::decode(bytes) {
         Ok(media) => media,
+
         Err(error) => {
             eprintln!(
                 "event=media_datagram_invalid connection={} error={error:#}",
                 connection.stable_id(),
             );
+
             return;
         }
     };
@@ -264,6 +274,7 @@ fn handle_media_datagram(
             "event=media_session_mismatch expected={} got={} frame={}",
             session_id, media.session_id, media.frame_id,
         );
+
         return;
     }
 
@@ -284,17 +295,31 @@ fn handle_media_datagram(
 
                 Err(error) => {
                     eprintln!(
-                        "event=jpeg_frame_invalid session={} frame={} jpeg_bytes={} error={error:#}",
-                        frame.session_id,
-                        frame.frame_id,
-                        frame.bytes.len(),
-                    );
+                            "event=jpeg_frame_invalid session={} frame={} jpeg_bytes={} error={error:#}",
+                            frame.session_id,
+                            frame.frame_id,
+                            frame.bytes.len(),
+                        );
 
                     return;
                 }
             };
 
             tracker.record(frame.frame_id, received_at);
+
+            if let Some(sender) = preview_sender {
+                let preview_jpeg = PreviewJpeg {
+                    frame_id: frame.frame_id,
+                    bytes: frame.bytes.clone(),
+                };
+
+                if let Err(error) = crate::preview::publish(sender, preview_jpeg) {
+                    eprintln!(
+                        "event=preview_publish_failed frame={} error={error}",
+                        frame.frame_id,
+                    );
+                }
+            }
 
             println!(
                 "event=jpeg_frame_reassembled session={} frame={} jpeg_bytes={} sent_at_ms={} peer={}",

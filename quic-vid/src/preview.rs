@@ -2,6 +2,12 @@ use minifb::{Key, Window, WindowOptions};
 use tokio::sync::watch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewJpeg {
+    pub frame_id: u64,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviewFrame {
     pub frame_id: u64,
     pub width: usize,
@@ -9,22 +15,22 @@ pub struct PreviewFrame {
     pub pixels: Vec<u32>,
 }
 
-pub type PreviewSender = watch::Sender<Option<PreviewFrame>>;
-pub type PreviewReceiver = watch::Receiver<Option<PreviewFrame>>;
+pub type PreviewSender = watch::Sender<Option<PreviewJpeg>>;
+pub type PreviewReceiver = watch::Receiver<Option<PreviewJpeg>>;
 
 pub fn channel() -> (PreviewSender, PreviewReceiver) {
     watch::channel(None)
 }
 
-pub fn publish(sender: &PreviewSender, frame: PreviewFrame) -> anyhow::Result<()> {
+pub fn publish(sender: &PreviewSender, jpeg: PreviewJpeg) -> anyhow::Result<()> {
     sender
-        .send(Some(frame))
+        .send(Some(jpeg))
         .map_err(|_| anyhow::anyhow!("preview receiver has closed"))?;
 
     Ok(())
 }
 
-pub fn take_latest_if_changed(receiver: &mut PreviewReceiver) -> Option<PreviewFrame> {
+pub fn take_latest_if_changed(receiver: &mut PreviewReceiver) -> Option<PreviewJpeg> {
     if !receiver.has_changed().ok()? {
         return None;
     }
@@ -34,7 +40,6 @@ pub fn take_latest_if_changed(receiver: &mut PreviewReceiver) -> Option<PreviewF
 
 pub fn preview_frame_from_jpeg(frame_id: u64, jpeg: &[u8]) -> anyhow::Result<PreviewFrame> {
     let image = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg)?;
-
     let rgb = image.to_rgb8();
 
     let width: usize = rgb.width().try_into()?;
@@ -77,7 +82,9 @@ pub fn show_preview_frame(frame: &PreviewFrame) -> anyhow::Result<()> {
 }
 
 pub fn show_preview_stream(mut receiver: PreviewReceiver) -> anyhow::Result<()> {
-    let mut current_frame = wait_for_first_frame(&receiver)?;
+    let first_jpeg = wait_for_first_frame(&receiver)?;
+
+    let mut current_frame = preview_frame_from_jpeg(first_jpeg.frame_id, &first_jpeg.bytes)?;
 
     validate_preview_frame(&current_frame)?;
 
@@ -91,7 +98,9 @@ pub fn show_preview_stream(mut receiver: PreviewReceiver) -> anyhow::Result<()> 
     window.set_target_fps(60);
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        if let Some(frame) = take_latest_if_changed(&mut receiver) {
+        if let Some(jpeg) = take_latest_if_changed(&mut receiver) {
+            let frame = preview_frame_from_jpeg(jpeg.frame_id, &jpeg.bytes)?;
+
             validate_preview_frame(&frame)?;
 
             if frame.width != current_frame.width || frame.height != current_frame.height {
@@ -121,10 +130,10 @@ pub fn show_preview_stream(mut receiver: PreviewReceiver) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn wait_for_first_frame(receiver: &PreviewReceiver) -> anyhow::Result<PreviewFrame> {
+fn wait_for_first_frame(receiver: &PreviewReceiver) -> anyhow::Result<PreviewJpeg> {
     loop {
-        if let Some(frame) = receiver.borrow().clone() {
-            return Ok(frame);
+        if let Some(jpeg) = receiver.borrow().clone() {
+            return Ok(jpeg);
         }
 
         if receiver.has_changed().is_err() {
@@ -158,6 +167,17 @@ fn validate_preview_frame(frame: &PreviewFrame) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    fn test_jpeg(frame_id: u64) -> PreviewJpeg {
+        PreviewJpeg {
+            frame_id,
+            bytes: crate::test_pattern::generate_jpeg_frame(
+                frame_id,
+                crate::test_pattern::DEFAULT_JPEG_QUALITY,
+            )
+            .unwrap(),
+        }
+    }
+
     #[test]
     fn preview_frame_preserves_metadata() {
         let frame = PreviewFrame {
@@ -188,11 +208,9 @@ mod tests {
 
     #[test]
     fn generated_jpeg_converts_to_preview_frame() {
-        let jpeg =
-            crate::test_pattern::generate_jpeg_frame(42, crate::test_pattern::DEFAULT_JPEG_QUALITY)
-                .unwrap();
+        let jpeg = test_jpeg(42);
 
-        let frame = preview_frame_from_jpeg(42, &jpeg).unwrap();
+        let frame = preview_frame_from_jpeg(jpeg.frame_id, &jpeg.bytes).unwrap();
 
         assert_eq!(frame.frame_id, 42);
         assert_eq!(frame.width, 640);
@@ -233,11 +251,9 @@ mod tests {
 
     #[test]
     fn preview_buffer_matches_frame_dimensions() {
-        let jpeg =
-            crate::test_pattern::generate_jpeg_frame(7, crate::test_pattern::DEFAULT_JPEG_QUALITY)
-                .unwrap();
+        let jpeg = test_jpeg(7);
 
-        let frame = preview_frame_from_jpeg(7, &jpeg).unwrap();
+        let frame = preview_frame_from_jpeg(jpeg.frame_id, &jpeg.bytes).unwrap();
 
         assert_eq!(frame.pixels.len(), frame.width * frame.height);
     }
@@ -274,53 +290,32 @@ mod tests {
     }
 
     #[test]
-    fn published_frame_becomes_latest() {
+    fn published_jpeg_becomes_latest() {
         let (sender, mut receiver) = channel();
 
-        let frame = PreviewFrame {
-            frame_id: 42,
-            width: 1,
-            height: 1,
-            pixels: vec![0x00112233],
-        };
+        let jpeg = test_jpeg(42);
 
-        publish(&sender, frame.clone()).unwrap();
+        publish(&sender, jpeg.clone()).unwrap();
 
-        assert_eq!(take_latest_if_changed(&mut receiver), Some(frame));
+        assert_eq!(take_latest_if_changed(&mut receiver), Some(jpeg));
     }
 
     #[test]
     fn unchanged_preview_is_not_returned_twice() {
         let (sender, mut receiver) = channel();
 
-        let frame = PreviewFrame {
-            frame_id: 42,
-            width: 1,
-            height: 1,
-            pixels: vec![0],
-        };
-
-        publish(&sender, frame).unwrap();
+        publish(&sender, test_jpeg(42)).unwrap();
 
         assert!(take_latest_if_changed(&mut receiver).is_some());
         assert!(take_latest_if_changed(&mut receiver).is_none());
     }
 
     #[test]
-    fn preview_channel_keeps_only_latest_frame() {
+    fn preview_channel_keeps_only_latest_jpeg() {
         let (sender, mut receiver) = channel();
 
         for frame_id in 40..=46 {
-            publish(
-                &sender,
-                PreviewFrame {
-                    frame_id,
-                    width: 1,
-                    height: 1,
-                    pixels: vec![frame_id as u32],
-                },
-            )
-            .unwrap();
+            publish(&sender, test_jpeg(frame_id)).unwrap();
         }
 
         let latest = take_latest_if_changed(&mut receiver).unwrap();
@@ -334,15 +329,7 @@ mod tests {
 
         drop(receiver);
 
-        let result = publish(
-            &sender,
-            PreviewFrame {
-                frame_id: 42,
-                width: 1,
-                height: 1,
-                pixels: vec![0],
-            },
-        );
+        let result = publish(&sender, test_jpeg(42));
 
         assert!(result.is_err());
     }
