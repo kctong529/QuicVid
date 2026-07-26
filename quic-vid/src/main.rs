@@ -3,6 +3,8 @@ mod control;
 mod frame_tracker;
 mod media;
 mod server;
+#[cfg(test)]
+mod test_pattern;
 mod tls;
 
 use clap::{Parser, Subcommand};
