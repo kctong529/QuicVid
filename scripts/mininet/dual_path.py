@@ -49,7 +49,7 @@ def show_route(node, source_ip, destination_ip, description):
     info(result)
 
 
-def main():
+def create_network():
     net = Mininet(
         controller=None,
         link=TCLink,
@@ -204,6 +204,12 @@ def main():
         "10.0.0.1",
         "Path B route",
     )
+
+    return net
+
+
+def main():
+    net = create_network()
 
     info("*** Network ready\n")
     CLI(net)
