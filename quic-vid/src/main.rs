@@ -41,6 +41,9 @@ enum Command {
         #[arg(long, default_value = "0.0.0.0:0")]
         bind: SocketAddr,
 
+        #[arg(long)]
+        rebind: Option<SocketAddr>,
+
         #[arg(long, default_value_t = 10)]
         fps: u32,
 
@@ -125,10 +128,11 @@ async fn main() -> anyhow::Result<()> {
         Command::Client {
             connect,
             bind,
+            rebind,
             fps,
             duration_seconds,
             jpeg_quality,
-        } => client::run(connect, bind, fps, duration_seconds, jpeg_quality).await,
+        } => client::run(connect, bind, rebind, fps, duration_seconds, jpeg_quality).await,
 
         Command::GenerateTestFrames {
             count,

@@ -1,14 +1,13 @@
 use crate::media::{fragment_frame, MEDIA_HEADER_SIZE};
 use crate::{control, test_pattern, tls};
-use std::net::SocketAddr;
-#[cfg(test)]
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 pub async fn run(
     connect: SocketAddr,
     bind: SocketAddr,
+    rebind: Option<SocketAddr>,
     fps: u32,
     duration_seconds: u64,
     jpeg_quality: u8,
@@ -92,6 +91,22 @@ pub async fn run(
         "event=datagram_transport_ready session={} max_datagram_size={} max_payload_size={}",
         session_id, max_datagram_size, max_payload_size,
     );
+
+    if let Some(rebind_addr) = rebind {
+        let old_addr = endpoint.local_addr()?;
+
+        println!(
+            "event=migration_requested old_local={} requested_local={}",
+            old_addr, rebind_addr
+        );
+
+        let new_addr = rebind_endpoint(&endpoint, rebind_addr)?;
+
+        println!(
+            "event=endpoint_rebound old_local={} new_local={}",
+            old_addr, new_addr
+        );
+    }
 
     let frame_interval = 1.0 / f64::from(fps);
     let video_started = tokio::time::Instant::now();
@@ -188,7 +203,6 @@ pub async fn run(
     Ok(())
 }
 
-#[cfg(test)]
 fn rebind_endpoint(endpoint: &quinn::Endpoint, bind: SocketAddr) -> anyhow::Result<SocketAddr> {
     let socket = UdpSocket::bind(bind)?;
     let local_addr = socket.local_addr()?;
