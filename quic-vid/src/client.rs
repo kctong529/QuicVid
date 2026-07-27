@@ -170,7 +170,9 @@ pub async fn run(
             if now >= next_health_check {
                 let ack_count = connection.stats().frame_rx.acks;
 
-                match monitor.observe(now, ack_count) {
+                let event = monitor.observe(now, ack_count);
+
+                match event {
                     PathHealthEvent::None => {}
 
                     PathHealthEvent::BecameSuspect => {
@@ -207,6 +209,16 @@ pub async fn run(
                             elapsed, ack_count, challenge_after_ms,
                         );
                     }
+                }
+
+                if event != PathHealthEvent::None {
+                    handle_path_health_event(
+                        event,
+                        &mut migration,
+                        video_started.elapsed(),
+                        endpoint.local_addr()?,
+                        connection.stable_id(),
+                    )?;
                 }
 
                 next_health_check = now + PATH_HEALTH_POLL_INTERVAL;
@@ -368,6 +380,62 @@ pub async fn run(
     Ok(())
 }
 
+fn handle_path_health_event(
+    event: PathHealthEvent,
+    migration: &mut MigrationController,
+    elapsed: Duration,
+    active_local: SocketAddr,
+    connection_id: usize,
+) -> anyhow::Result<()> {
+    let context = MigrationContext {
+        elapsed,
+        active_local,
+        candidate_local: None,
+        connection_id,
+    };
+
+    match event {
+        PathHealthEvent::None => {}
+
+        PathHealthEvent::BecameSuspect => {
+            migration.transition(
+                MigrationState::Suspect,
+                MigrationReason::AckProgressTimeout,
+                context,
+            )?;
+        }
+
+        PathHealthEvent::Recovered => {
+            migration.transition(
+                MigrationState::Healthy,
+                MigrationReason::AckProgressRecovered,
+                context,
+            )?;
+        }
+
+        PathHealthEvent::ChallengeRequested => {
+            migration.transition(
+                MigrationState::Challenging,
+                MigrationReason::PathDegradationPersisted,
+                context,
+            )?;
+
+            println!(
+                "event=path_challenge_requested \
+                 elapsed_seconds={:.3} \
+                 reason=ack_progress_timeout_persisted \
+                 active_local={} \
+                 connection={}",
+                elapsed.as_secs_f64(),
+                active_local,
+                connection_id,
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn rebind_endpoint(endpoint: &quinn::Endpoint, bind: SocketAddr) -> anyhow::Result<SocketAddr> {
     let socket = UdpSocket::bind(bind)?;
     let local_addr = socket.local_addr()?;
@@ -498,5 +566,108 @@ mod tests {
         );
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn path_health_suspect_event_moves_controller_to_suspect() {
+        let mut migration = MigrationController::new();
+
+        handle_path_health_event(
+            PathHealthEvent::BecameSuspect,
+            &mut migration,
+            Duration::from_millis(250),
+            "10.0.1.2:5000".parse().unwrap(),
+            42,
+        )
+        .unwrap();
+
+        assert_eq!(migration.state(), MigrationState::Suspect);
+    }
+
+    #[test]
+    fn path_health_recovery_returns_controller_to_healthy() {
+        let mut migration = MigrationController::new();
+        let active_local = "10.0.1.2:5000".parse().unwrap();
+
+        handle_path_health_event(
+            PathHealthEvent::BecameSuspect,
+            &mut migration,
+            Duration::from_millis(250),
+            active_local,
+            42,
+        )
+        .unwrap();
+
+        handle_path_health_event(
+            PathHealthEvent::Recovered,
+            &mut migration,
+            Duration::from_millis(350),
+            active_local,
+            42,
+        )
+        .unwrap();
+
+        assert_eq!(migration.state(), MigrationState::Healthy);
+    }
+
+    #[test]
+    fn persistent_path_degradation_moves_controller_to_challenging() {
+        let mut migration = MigrationController::new();
+        let active_local = "10.0.1.2:5000".parse().unwrap();
+
+        handle_path_health_event(
+            PathHealthEvent::BecameSuspect,
+            &mut migration,
+            Duration::from_millis(250),
+            active_local,
+            42,
+        )
+        .unwrap();
+
+        handle_path_health_event(
+            PathHealthEvent::ChallengeRequested,
+            &mut migration,
+            Duration::from_millis(750),
+            active_local,
+            42,
+        )
+        .unwrap();
+
+        assert_eq!(migration.state(), MigrationState::Challenging);
+    }
+
+    #[test]
+    fn recovery_while_challenging_returns_controller_to_healthy() {
+        let mut migration = MigrationController::new();
+        let active_local = "10.0.1.2:5000".parse().unwrap();
+
+        handle_path_health_event(
+            PathHealthEvent::BecameSuspect,
+            &mut migration,
+            Duration::from_millis(250),
+            active_local,
+            42,
+        )
+        .unwrap();
+
+        handle_path_health_event(
+            PathHealthEvent::ChallengeRequested,
+            &mut migration,
+            Duration::from_millis(750),
+            active_local,
+            42,
+        )
+        .unwrap();
+
+        handle_path_health_event(
+            PathHealthEvent::Recovered,
+            &mut migration,
+            Duration::from_millis(800),
+            active_local,
+            42,
+        )
+        .unwrap();
+
+        assert_eq!(migration.state(), MigrationState::Healthy);
     }
 }

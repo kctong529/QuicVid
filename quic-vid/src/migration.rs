@@ -26,8 +26,10 @@ impl fmt::Display for MigrationState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MigrationReason {
     ControlledTrigger,
-    ConditionCleared,
     ConditionPersisted,
+    AckProgressTimeout,
+    AckProgressRecovered,
+    PathDegradationPersisted,
     AlternatePathReady,
     MigrationCompleted,
 }
@@ -36,8 +38,10 @@ impl fmt::Display for MigrationReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
             MigrationReason::ControlledTrigger => "controlled_trigger",
-            MigrationReason::ConditionCleared => "condition_cleared",
             MigrationReason::ConditionPersisted => "condition_persisted",
+            MigrationReason::AckProgressTimeout => "ack_progress_timeout",
+            MigrationReason::AckProgressRecovered => "ack_progress_recovered",
+            MigrationReason::PathDegradationPersisted => "path_degradation_persisted",
             MigrationReason::AlternatePathReady => "alternate_path_ready",
             MigrationReason::MigrationCompleted => "migration_completed",
         };
@@ -198,7 +202,7 @@ mod tests {
         controller
             .transition(
                 MigrationState::Healthy,
-                MigrationReason::ConditionCleared,
+                MigrationReason::AckProgressRecovered,
                 test_context(),
             )
             .unwrap();
