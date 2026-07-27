@@ -19,6 +19,36 @@ class LinuxRouter(Node):
         super().terminate()
 
 
+def check_ping(node, source_ip, destination_ip, description):
+    """Verify that a destination is reachable from a specific source address."""
+
+    info(f"*** Checking {description}\n")
+
+    output = node.cmd(
+        f"ping -I {source_ip} -c 2 -W 1 {destination_ip}; "
+        "echo PING_EXIT:$?"
+    )
+
+    info(output)
+
+    if "PING_EXIT:0" not in output:
+        raise RuntimeError(
+            f"Connectivity check failed: {description}"
+        )
+
+
+def show_route(node, source_ip, destination_ip, description):
+    """Print the route Linux selects for a source/destination pair."""
+
+    info(f"*** {description}\n")
+
+    result = node.cmd(
+        f"ip route get {destination_ip} from {source_ip}"
+    )
+
+    info(result)
+
+
 def main():
     net = Mininet(
         controller=None,
@@ -144,6 +174,36 @@ def main():
     for node in (client, server, r1, r2):
         node.cmd("sysctl -w net.ipv4.conf.all.rp_filter=0")
         node.cmd("sysctl -w net.ipv4.conf.default.rp_filter=0")
+
+    info("*** Verifying dual-path connectivity\n")
+
+    check_ping(
+        client,
+        "10.0.1.2",
+        "10.0.0.1",
+        "path A: client -> r1 -> server",
+    )
+
+    check_ping(
+        client,
+        "10.0.2.2",
+        "10.0.0.1",
+        "path B: client -> r2 -> server",
+    )
+
+    show_route(
+        client,
+        "10.0.1.2",
+        "10.0.0.1",
+        "Path A route",
+    )
+
+    show_route(
+        client,
+        "10.0.2.2",
+        "10.0.0.1",
+        "Path B route",
+    )
 
     info("*** Network ready\n")
     CLI(net)
