@@ -171,3 +171,15 @@ stream retransmission.
 
 The sender checks Quinn's current maximum DATAGRAM size before streaming and
 rejects single-chunk payloads that exceed the available media payload size.
+
+## Mininet connection migration
+
+Controlled QUIC connection migration is demonstrated using a dual-path
+Mininet topology and the migration demo launcher.
+
+From the repository root:
+
+```bash
+cargo build --release --manifest-path quic-vid/Cargo.toml
+sudo mn -c
+sudo python3 scripts/mininet/migration_demo.py --preset preview
