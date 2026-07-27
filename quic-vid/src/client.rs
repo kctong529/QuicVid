@@ -1,9 +1,12 @@
 use crate::media::{fragment_frame, MEDIA_HEADER_SIZE};
 use crate::migration::{MigrationContext, MigrationController, MigrationReason, MigrationState};
+use crate::path_health::{PathHealthEvent, PathHealthMonitor};
 use crate::{control, test_pattern, tls};
 use std::net::{SocketAddr, UdpSocket};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+
+const PATH_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 pub async fn run(
     connect: SocketAddr,
@@ -127,6 +130,20 @@ pub async fn run(
 
     let frame_interval = 1.0 / f64::from(fps);
     let video_started = tokio::time::Instant::now();
+    let health_started = Instant::now();
+
+    let initial_ack_count = connection.stats().frame_rx.acks;
+
+    let mut path_health = auto_migrate.then(|| {
+        PathHealthMonitor::new(
+            Duration::from_millis(suspect_after_ms),
+            Duration::from_millis(challenge_after_ms),
+            health_started,
+            initial_ack_count,
+        )
+    });
+
+    let mut next_health_check = health_started;
 
     let mut sent_frames = 0u64;
     let mut sent_datagrams = 0u64;
@@ -146,6 +163,55 @@ pub async fn run(
 
     loop {
         let elapsed = video_started.elapsed().as_secs_f64();
+
+        if let Some(monitor) = path_health.as_mut() {
+            let now = Instant::now();
+
+            if now >= next_health_check {
+                let ack_count = connection.stats().frame_rx.acks;
+
+                match monitor.observe(now, ack_count) {
+                    PathHealthEvent::None => {}
+
+                    PathHealthEvent::BecameSuspect => {
+                        println!(
+                            "event=path_health \
+                             status=suspect \
+                             reason=ack_progress_timeout \
+                             elapsed_seconds={:.3} \
+                             ack_count={} \
+                             suspect_after_ms={}",
+                            elapsed, ack_count, suspect_after_ms,
+                        );
+                    }
+
+                    PathHealthEvent::Recovered => {
+                        println!(
+                            "event=path_health \
+                             status=recovered \
+                             reason=ack_progress_resumed \
+                             elapsed_seconds={:.3} \
+                             ack_count={}",
+                            elapsed, ack_count,
+                        );
+                    }
+
+                    PathHealthEvent::ChallengeRequested => {
+                        println!(
+                            "event=path_health \
+                             status=challenge_requested \
+                             reason=ack_progress_timeout_persisted \
+                             elapsed_seconds={:.3} \
+                             ack_count={} \
+                             challenge_after_ms={}",
+                            elapsed, ack_count, challenge_after_ms,
+                        );
+                    }
+                }
+
+                next_health_check = now + PATH_HEALTH_POLL_INTERVAL;
+            }
+        }
 
         if !rebound {
             if let (Some(rebind_addr), Some(rebind_after)) = (rebind, rebind_after_seconds) {
