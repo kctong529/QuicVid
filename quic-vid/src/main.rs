@@ -4,6 +4,7 @@ mod frame_assembler;
 mod frame_tracker;
 mod media;
 mod migration;
+mod path_health;
 mod preview;
 mod server;
 mod test_pattern;
