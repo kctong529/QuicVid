@@ -1,6 +1,8 @@
 use crate::media::{fragment_frame, MEDIA_HEADER_SIZE};
 use crate::{control, test_pattern, tls};
 use std::net::SocketAddr;
+#[cfg(test)]
+use std::net::UdpSocket;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -186,7 +188,35 @@ pub async fn run(
     Ok(())
 }
 
+#[cfg(test)]
+fn rebind_endpoint(endpoint: &quinn::Endpoint, bind: SocketAddr) -> anyhow::Result<SocketAddr> {
+    let socket = UdpSocket::bind(bind)?;
+    let local_addr = socket.local_addr()?;
+
+    endpoint.rebind(socket)?;
+
+    Ok(local_addr)
+}
+
 fn unix_time_ms() -> anyhow::Result<u64> {
     let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)?;
     Ok(elapsed.as_millis().try_into()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rebind_endpoint_updates_endpoint_local_address() {
+        let endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+
+        let old_addr = endpoint.local_addr().unwrap();
+
+        let new_addr = rebind_endpoint(&endpoint, "127.0.0.1:0".parse().unwrap()).unwrap();
+
+        assert_eq!(new_addr.ip(), old_addr.ip());
+        assert_ne!(new_addr.port(), old_addr.port());
+        assert_eq!(endpoint.local_addr().unwrap(), new_addr);
+    }
 }
