@@ -86,6 +86,65 @@ def main():
     server.setIP("10.0.3.2/24", intf="server-eth0")
     server.setIP("10.0.4.2/24", intf="server-eth1")
 
+    info("*** Configuring server service address\n")
+
+    server.cmd("ip addr add 10.0.0.1/32 dev lo")
+
+    info("*** Configuring router routes\n")
+
+    r1.cmd(
+        "ip route add 10.0.0.1/32 "
+        "via 10.0.3.2 dev r1-eth1"
+    )
+
+    r2.cmd(
+        "ip route add 10.0.0.1/32 "
+        "via 10.0.4.2 dev r2-eth1"
+    )
+
+    info("*** Configuring server return routes\n")
+
+    server.cmd(
+        "ip route add 10.0.1.0/24 "
+        "via 10.0.3.1 dev server-eth0"
+    )
+
+    server.cmd(
+        "ip route add 10.0.2.0/24 "
+        "via 10.0.4.1 dev server-eth1"
+    )
+
+    info("*** Configuring client policy routing\n")
+
+    client.cmd("ip rule add from 10.0.1.2/32 table 101")
+    client.cmd("ip rule add from 10.0.2.2/32 table 102")
+
+    client.cmd(
+        "ip route add 10.0.1.0/24 "
+        "dev client-eth0 src 10.0.1.2 table 101"
+    )
+
+    client.cmd(
+        "ip route add default "
+        "via 10.0.1.1 dev client-eth0 table 101"
+    )
+
+    client.cmd(
+        "ip route add 10.0.2.0/24 "
+        "dev client-eth1 src 10.0.2.2 table 102"
+    )
+
+    client.cmd(
+        "ip route add default "
+        "via 10.0.2.1 dev client-eth1 table 102"
+    )
+
+    info("*** Disabling reverse-path filtering\n")
+
+    for node in (client, server, r1, r2):
+        node.cmd("sysctl -w net.ipv4.conf.all.rp_filter=0")
+        node.cmd("sysctl -w net.ipv4.conf.default.rp_filter=0")
+
     info("*** Network ready\n")
     CLI(net)
 
