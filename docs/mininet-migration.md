@@ -2,7 +2,8 @@
 
 This document describes the reproducible Mininet setup used to demonstrate
 QuicVid QUIC connection migration across two network paths while preserving the
-same media session.
+same media session, and to exercise the automatic path-health logic introduced
+for Milestone 4.
 
 The demo uses a fixed server service address and two client-side source
 addresses:
@@ -13,9 +14,14 @@ Path B: 10.0.2.2
 Server: 10.0.0.1
 ```
 
-During a run, the client initially sends media through Path A, then explicitly
-rebinds the active Quinn endpoint to Path B. The same QUIC connection and
-logical QuicVid session continue after the path change.
+Controlled migration presets initially send media through Path A, then explicitly
+rebind the active Quinn endpoint to Path B. The same QUIC connection and logical
+QuicVid session continue after the path change.
+
+Automatic path-health presets instead keep the client on Path A, introduce a
+reproducible Path A impairment, and verify that loss of QUIC ACK progress drives
+the migration controller into `Suspect` and, when degradation persists,
+`Challenging`. These presets do not yet discover or migrate to Path B.
 
 ## Topology
 
@@ -165,9 +171,145 @@ frame 0 -> Path A
 frame 1 -> Path B
 ```
 
+### Health-transient preset
+
+```bash
+sudo python3 scripts/mininet/migration_demo.py --preset health-transient
+```
+
+This preset exercises automatic path-health recovery from a temporary outage:
+
+```text
+FPS:                 10
+Duration:            4 s
+Initial path:        10.0.1.2 / Path A
+Automatic health:    enabled
+Suspect after:       250 ms
+Challenge after:     1000 ms
+Path A impairment:   starts at 1.0 s
+Impairment duration: 350 ms
+Preview:             disabled
+```
+
+The launcher temporarily takes `r1-eth0` down and restores it after 350 ms.
+The expected controller sequence is:
+
+```text
+Healthy
+  |
+  | ACK progress stops
+  v
+Suspect
+  |
+  | ACK progress resumes before challenge threshold
+  v
+Healthy
+```
+
+A successful run should emit both:
+
+```text
+event=path_health status=suspect ...
+event=path_health status=recovered ...
+```
+
+with matching migration-state transitions:
+
+```text
+Healthy -> Suspect -> Healthy
+```
+
+The `1000 ms` challenge threshold is deliberately longer than the transient
+recovery interval. Shorter values were observed to request a challenge before
+QUIC ACK progress had resumed, even after the link itself had already been
+restored. This trade-off is evaluated quantitatively later.
+
+### Health-sustained preset
+
+```bash
+sudo python3 scripts/mininet/migration_demo.py --preset health-sustained
+```
+
+This preset exercises escalation under persistent degradation:
+
+```text
+FPS:                 10
+Duration:            4 s
+Initial path:        10.0.1.2 / Path A
+Automatic health:    enabled
+Suspect after:       250 ms
+Challenge after:     500 ms
+Path A impairment:   starts at 1.0 s
+Impairment duration: sustained
+Preview:             disabled
+```
+
+The launcher takes `r1-eth0` down and leaves it unavailable. The expected
+controller sequence is:
+
+```text
+Healthy
+  |
+  | ACK progress stops
+  v
+Suspect
+  |
+  | degradation persists
+  v
+Challenging
+```
+
+A successful run should emit:
+
+```text
+event=path_health status=suspect ...
+event=path_health status=challenge_requested ...
+event=path_challenge_requested ...
+```
+
+and matching migration-state transitions:
+
+```text
+Healthy -> Suspect -> Challenging
+```
+
+The client intentionally stops at `Challenging`. No alternative local address
+is provided in advance, and no automatic endpoint rebind is performed in these
+Milestone 4 path-health presets.
+
+## Path-health signal
+
+Automatic path-health monitoring currently uses the cumulative QUIC ACK-frame
+counter exposed by Quinn connection statistics as its progress signal.
+
+While media is active, an increasing ACK count indicates ongoing transport-level
+progress on the current path. The client polls this value periodically and feeds
+it into the path-health monitor.
+
+The configured thresholds have the following meaning:
+
+```text
+last observed ACK progress
+        |
+        | suspect-after-ms
+        v
+     Suspect
+        |
+        | challenge-after-ms
+        v
+   Challenging
+```
+
+If ACK progress resumes while the controller is `Suspect` or `Challenging`, the
+controller returns to `Healthy`.
+
+`send_datagram()` success is not used as the health signal. A successful call
+only means the DATAGRAM was accepted by Quinn for transmission; it does not
+prove that the packet crossed the current path or reached the peer.
+
 ## Demo terminals
 
-The launcher creates and validates the Mininet topology and then opens four
+The launcher creates and validates the Mininet topology and opens the standard
 preconfigured xterm windows:
 
 ```text
@@ -176,6 +318,16 @@ QuicVid Client
 Path A - r1
 Path B - r2
 ```
+
+For `health-transient` and `health-sustained`, it also opens:
+
+```text
+Path A Impairment
+```
+
+The impairment controller waits for a client-start marker and schedules the Path A
+outage relative to the actual client start, rather than relative to launcher or
+xterm startup.
 
 ### QuicVid Server
 
@@ -192,7 +344,7 @@ For the preview preset, `--preview` is added automatically.
 The client terminal displays the resolved command but waits for Enter before
 starting the run.
 
-The migration command is equivalent to:
+For controlled migration presets, the client command is equivalent to:
 
 ```bash
 quic-vid client \
@@ -203,6 +355,23 @@ quic-vid client \
   --fps <fps> \
   --duration-seconds <duration>
 ```
+
+For automatic path-health presets, it is equivalent to:
+
+```bash
+quic-vid client \
+  --connect 10.0.0.1:4433 \
+  --bind 10.0.1.2:0 \
+  --auto-migrate \
+  --suspect-after-ms <threshold> \
+  --challenge-after-ms <threshold> \
+  --fps <fps> \
+  --duration-seconds <duration>
+```
+
+Automatic mode deliberately does not receive a `--rebind` target. Reaching
+`Challenging` means that an alternative path should now be discovered and tested;
+that work belongs to the next epic.
 
 This allows the server and packet capture windows to be ready before media
 transmission begins.
@@ -296,6 +465,19 @@ across the migration without an obvious session restart or prolonged freeze.
 The preview demo is intended as a qualitative continuity demonstration.
 Quantitative disruption and frame-loss measurements are evaluated separately.
 
+For the automatic path-health presets, verify the controller behavior separately:
+
+```text
+health-transient:
+Healthy -> Suspect -> Healthy
+
+health-sustained:
+Healthy -> Suspect -> Challenging
+```
+
+The health presets are for detection and state-machine verification only. They do
+not yet migrate to Path B.
+
 ## Custom configuration
 
 Preset values can be overridden from the command line.
@@ -319,6 +501,12 @@ Available overrides include:
 --rebind-after-seconds
 --preview
 --no-preview
+--auto-migrate
+--no-auto-migrate
+--suspect-after-ms
+--challenge-after-ms
+--impair-after-seconds
+--impair-duration-seconds
 ```
 
 For example, preview can be disabled while retaining the other preview preset
@@ -428,19 +616,32 @@ sudo mn -c
 
 ## Scope
 
-This demo demonstrates controlled client-side QUIC connection migration.
+This setup now supports two related kinds of reproducible Mininet experiments:
 
-It intentionally does not implement:
+* controlled client-side QUIC connection migration from Path A to Path B;
+* automatic detection of Path A degradation using QUIC ACK progress.
 
-* automatic network-change detection;
+The automatic path-health work currently ends at:
+
+```text
+Healthy -> Suspect -> Challenging
+```
+
+It intentionally does not yet implement:
+
+* discovery of alternative local interfaces or addresses;
+* selection or ranking of candidate paths;
+* QUIC validation of a newly discovered candidate path;
+* automatic endpoint rebind after entering `Challenging`;
+* final Path B migration policy;
 * Wi-Fi or NetworkManager-triggered migration;
-* path-quality-based migration decisions;
-* migration fallback logic;
 * physical wireless handover;
-* repeated statistical evaluation.
+* repeated statistical evaluation or threshold sweeps;
+* reconnect or TCP baselines.
 
-Those concerns are outside the scope of the controlled migration demo.
+Alternative-path discovery, validation, and automatic migration are handled by
+the next epic. Statistical threshold and disruption evaluation is handled later.
 
-The purpose of this setup is to provide a deterministic and reproducible
-environment in which the path change is known in advance and the continuity of
-the same QUIC media session can be directly observed.
+The purpose of this setup is to provide a deterministic environment for both the
+known controlled migration case and the automatic detection logic that decides
+when an alternative path should be challenged.
