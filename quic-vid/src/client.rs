@@ -1,4 +1,5 @@
 use crate::media::{fragment_frame, MEDIA_HEADER_SIZE};
+use crate::migration::{MigrationContext, MigrationController, MigrationReason, MigrationState};
 use crate::{control, test_pattern, tls};
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -114,6 +115,17 @@ pub async fn run(
     let mut sent_datagrams = 0u64;
     let mut last_frame_id = None;
     let mut rebound = false;
+    let mut migration = MigrationController::new();
+
+    println!(
+        "event=migration_controller_ready \
+         state={} \
+         connection={} \
+         local={}",
+        migration.state(),
+        connection.stable_id(),
+        endpoint.local_addr()?,
+    );
 
     loop {
         let elapsed = video_started.elapsed().as_secs_f64();
@@ -122,6 +134,7 @@ pub async fn run(
             if let (Some(rebind_addr), Some(rebind_after)) = (rebind, rebind_after_seconds) {
                 if elapsed >= rebind_after {
                     let old_addr = endpoint.local_addr()?;
+                    let elapsed_duration = video_started.elapsed();
 
                     println!(
                         "event=migration_requested \
@@ -130,6 +143,31 @@ pub async fn run(
                          requested_local={}",
                         elapsed, old_addr, rebind_addr
                     );
+
+                    let context = MigrationContext {
+                        elapsed: elapsed_duration,
+                        active_local: old_addr,
+                        candidate_local: Some(rebind_addr),
+                        connection_id: connection.stable_id(),
+                    };
+
+                    migration.transition(
+                        MigrationState::Suspect,
+                        MigrationReason::ControlledTrigger,
+                        context,
+                    )?;
+
+                    migration.transition(
+                        MigrationState::Challenging,
+                        MigrationReason::ConditionPersisted,
+                        context,
+                    )?;
+
+                    migration.transition(
+                        MigrationState::Migrating,
+                        MigrationReason::AlternatePathReady,
+                        context,
+                    )?;
 
                     let new_addr = rebind_endpoint(&endpoint, rebind_addr)?;
 
@@ -144,6 +182,17 @@ pub async fn run(
                         new_addr,
                         connection.stable_id()
                     );
+
+                    migration.transition(
+                        MigrationState::Healthy,
+                        MigrationReason::MigrationCompleted,
+                        MigrationContext {
+                            elapsed: video_started.elapsed(),
+                            active_local: new_addr,
+                            candidate_local: None,
+                            connection_id: connection.stable_id(),
+                        },
+                    )?;
 
                     rebound = true;
                 }
