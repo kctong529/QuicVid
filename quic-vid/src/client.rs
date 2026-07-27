@@ -8,6 +8,7 @@ pub async fn run(
     connect: SocketAddr,
     bind: SocketAddr,
     rebind: Option<SocketAddr>,
+    rebind_after_seconds: Option<f64>,
     fps: u32,
     duration_seconds: u64,
     jpeg_quality: u8,
@@ -18,6 +19,20 @@ pub async fn run(
 
     if duration_seconds == 0 {
         anyhow::bail!("duration-seconds must be greater than zero");
+    }
+
+    if rebind.is_some() != rebind_after_seconds.is_some() {
+        anyhow::bail!("--rebind and --rebind-after-seconds must be used together");
+    }
+
+    if let Some(rebind_after) = rebind_after_seconds {
+        if rebind_after <= 0.0 {
+            anyhow::bail!("rebind-after-seconds must be greater than zero");
+        }
+
+        if rebind_after >= duration_seconds as f64 {
+            anyhow::bail!("rebind-after-seconds must be smaller than duration-seconds");
+        }
     }
 
     if !(1..=100).contains(&jpeg_quality) {
@@ -92,31 +107,49 @@ pub async fn run(
         session_id, max_datagram_size, max_payload_size,
     );
 
-    if let Some(rebind_addr) = rebind {
-        let old_addr = endpoint.local_addr()?;
-
-        println!(
-            "event=migration_requested old_local={} requested_local={}",
-            old_addr, rebind_addr
-        );
-
-        let new_addr = rebind_endpoint(&endpoint, rebind_addr)?;
-
-        println!(
-            "event=endpoint_rebound old_local={} new_local={}",
-            old_addr, new_addr
-        );
-    }
-
     let frame_interval = 1.0 / f64::from(fps);
     let video_started = tokio::time::Instant::now();
 
     let mut sent_frames = 0u64;
     let mut sent_datagrams = 0u64;
     let mut last_frame_id = None;
+    let mut rebound = false;
 
     loop {
         let elapsed = video_started.elapsed().as_secs_f64();
+
+        if !rebound {
+            if let (Some(rebind_addr), Some(rebind_after)) = (rebind, rebind_after_seconds) {
+                if elapsed >= rebind_after {
+                    let old_addr = endpoint.local_addr()?;
+
+                    println!(
+                        "event=migration_requested \
+                         elapsed_seconds={:.3} \
+                         old_local={} \
+                         requested_local={}",
+                        elapsed, old_addr, rebind_addr
+                    );
+
+                    let new_addr = rebind_endpoint(&endpoint, rebind_addr)?;
+
+                    println!(
+                        "event=endpoint_rebound \
+                         elapsed_seconds={:.3} \
+                         old_local={} \
+                         new_local={} \
+                         connection={}",
+                        elapsed,
+                        old_addr,
+                        new_addr,
+                        connection.stable_id()
+                    );
+
+                    rebound = true;
+                }
+            }
+        }
+
         let frame_id = (elapsed / frame_interval).floor() as u64;
 
         if frame_id >= total_frames {
