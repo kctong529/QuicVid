@@ -3,6 +3,7 @@ mod control;
 mod frame_assembler;
 mod frame_tracker;
 mod media;
+mod migration;
 mod preview;
 mod server;
 mod test_pattern;
