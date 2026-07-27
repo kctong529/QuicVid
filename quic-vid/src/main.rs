@@ -60,6 +60,18 @@ enum Command {
             default_value_t = test_pattern::DEFAULT_JPEG_QUALITY
         )]
         jpeg_quality: u8,
+
+        /// Enable automatic path-health monitoring.
+        #[arg(long)]
+        auto_migrate: bool,
+
+        /// Time without path progress before entering Suspect.
+        #[arg(long, default_value_t = 250)]
+        suspect_after_ms: u64,
+
+        /// Additional time spent in Suspect before requesting a challenge.
+        #[arg(long, default_value_t = 250)]
+        challenge_after_ms: u64,
     },
 
     /// Generate JPEG test-pattern frames for inspection.
@@ -138,6 +150,9 @@ async fn main() -> anyhow::Result<()> {
             fps,
             duration_seconds,
             jpeg_quality,
+            auto_migrate,
+            suspect_after_ms,
+            challenge_after_ms,
         } => {
             client::run(
                 connect,
@@ -147,6 +162,9 @@ async fn main() -> anyhow::Result<()> {
                 fps,
                 duration_seconds,
                 jpeg_quality,
+                auto_migrate,
+                suspect_after_ms,
+                challenge_after_ms,
             )
             .await
         }
@@ -259,4 +277,119 @@ fn run_server_with_preview(listen: SocketAddr) -> anyhow::Result<()> {
 
     preview_result?;
     server_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_client(args: &[&str]) -> Command {
+        let cli = Cli::try_parse_from(args).expect("CLI should parse");
+
+        cli.command
+    }
+
+    #[test]
+    fn automatic_migration_uses_default_thresholds() {
+        let command = parse_client(&[
+            "quic-vid",
+            "client",
+            "--connect",
+            "127.0.0.1:4433",
+            "--auto-migrate",
+        ]);
+
+        match command {
+            Command::Client {
+                auto_migrate,
+                suspect_after_ms,
+                challenge_after_ms,
+                ..
+            } => {
+                assert!(auto_migrate);
+                assert_eq!(suspect_after_ms, 250);
+                assert_eq!(challenge_after_ms, 250);
+            }
+            _ => panic!("expected client command"),
+        }
+    }
+
+    #[test]
+    fn automatic_migration_accepts_custom_thresholds() {
+        let command = parse_client(&[
+            "quic-vid",
+            "client",
+            "--connect",
+            "127.0.0.1:4433",
+            "--auto-migrate",
+            "--suspect-after-ms",
+            "150",
+            "--challenge-after-ms",
+            "400",
+        ]);
+
+        match command {
+            Command::Client {
+                auto_migrate,
+                suspect_after_ms,
+                challenge_after_ms,
+                ..
+            } => {
+                assert!(auto_migrate);
+                assert_eq!(suspect_after_ms, 150);
+                assert_eq!(challenge_after_ms, 400);
+            }
+            _ => panic!("expected client command"),
+        }
+    }
+
+    #[test]
+    fn automatic_migration_is_disabled_by_default() {
+        let command = parse_client(&["quic-vid", "client", "--connect", "127.0.0.1:4433"]);
+
+        match command {
+            Command::Client {
+                auto_migrate,
+                suspect_after_ms,
+                challenge_after_ms,
+                ..
+            } => {
+                assert!(!auto_migrate);
+
+                // The configured defaults are still parsed even though the
+                // automatic monitor is disabled.
+                assert_eq!(suspect_after_ms, 250);
+                assert_eq!(challenge_after_ms, 250);
+            }
+            _ => panic!("expected client command"),
+        }
+    }
+
+    #[test]
+    fn controlled_migration_arguments_still_parse() {
+        let command = parse_client(&[
+            "quic-vid",
+            "client",
+            "--connect",
+            "127.0.0.1:4433",
+            "--rebind",
+            "127.0.0.1:5000",
+            "--rebind-after-seconds",
+            "1.5",
+        ]);
+
+        match command {
+            Command::Client {
+                auto_migrate,
+                rebind,
+                rebind_after_seconds,
+                ..
+            } => {
+                assert!(!auto_migrate);
+                assert_eq!(rebind, Some("127.0.0.1:5000".parse().unwrap()));
+                assert_eq!(rebind_after_seconds, Some(1.5));
+            }
+            _ => panic!("expected client command"),
+        }
+    }
 }

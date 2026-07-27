@@ -13,6 +13,9 @@ pub async fn run(
     fps: u32,
     duration_seconds: u64,
     jpeg_quality: u8,
+    auto_migrate: bool,
+    suspect_after_ms: u64,
+    challenge_after_ms: u64,
 ) -> anyhow::Result<()> {
     if fps == 0 {
         anyhow::bail!("fps must be greater than zero");
@@ -22,9 +25,13 @@ pub async fn run(
         anyhow::bail!("duration-seconds must be greater than zero");
     }
 
-    if rebind.is_some() != rebind_after_seconds.is_some() {
-        anyhow::bail!("--rebind and --rebind-after-seconds must be used together");
-    }
+    validate_migration_config(
+        rebind,
+        rebind_after_seconds,
+        auto_migrate,
+        suspect_after_ms,
+        challenge_after_ms,
+    )?;
 
     if let Some(rebind_after) = rebind_after_seconds {
         if rebind_after <= 0.0 {
@@ -34,6 +41,16 @@ pub async fn run(
         if rebind_after >= duration_seconds as f64 {
             anyhow::bail!("rebind-after-seconds must be smaller than duration-seconds");
         }
+    }
+
+    if auto_migrate {
+        println!(
+            "event=path_health_config \
+             enabled=true \
+             suspect_after_ms={} \
+             challenge_after_ms={}",
+            suspect_after_ms, challenge_after_ms
+        );
     }
 
     if !(1..=100).contains(&jpeg_quality) {
@@ -299,6 +316,40 @@ fn unix_time_ms() -> anyhow::Result<u64> {
     Ok(elapsed.as_millis().try_into()?)
 }
 
+fn validate_migration_config(
+    rebind: Option<SocketAddr>,
+    rebind_after_seconds: Option<f64>,
+    auto_migrate: bool,
+    suspect_after_ms: u64,
+    challenge_after_ms: u64,
+) -> anyhow::Result<()> {
+    match (rebind, rebind_after_seconds) {
+        (Some(_), None) => {
+            anyhow::bail!("--rebind requires --rebind-after-seconds");
+        }
+        (None, Some(_)) => {
+            anyhow::bail!("--rebind-after-seconds requires --rebind");
+        }
+        _ => {}
+    }
+
+    if auto_migrate {
+        if suspect_after_ms == 0 {
+            anyhow::bail!("--suspect-after-ms must be greater than zero");
+        }
+
+        if challenge_after_ms == 0 {
+            anyhow::bail!("--challenge-after-ms must be greater than zero");
+        }
+
+        if rebind.is_some() || rebind_after_seconds.is_some() {
+            anyhow::bail!("--auto-migrate cannot be combined with timed migration");
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +365,72 @@ mod tests {
         assert_eq!(new_addr.ip(), old_addr.ip());
         assert_ne!(new_addr.port(), old_addr.port());
         assert_eq!(endpoint.local_addr().unwrap(), new_addr);
+    }
+
+    #[test]
+    fn rebind_requires_rebind_time() {
+        let result = validate_migration_config(
+            Some("127.0.0.1:5000".parse().unwrap()),
+            None,
+            false,
+            250,
+            250,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rebind_time_requires_rebind_address() {
+        let result = validate_migration_config(None, Some(1.0), false, 250, 250);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn automatic_migration_rejects_zero_suspect_threshold() {
+        let result = validate_migration_config(None, None, true, 0, 250);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn automatic_migration_rejects_zero_challenge_threshold() {
+        let result = validate_migration_config(None, None, true, 250, 0);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn automatic_and_timed_migration_are_mutually_exclusive() {
+        let result = validate_migration_config(
+            Some("127.0.0.1:5000".parse().unwrap()),
+            Some(1.0),
+            true,
+            250,
+            250,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn automatic_migration_without_fallback_address_is_valid() {
+        let result = validate_migration_config(None, None, true, 250, 250);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn controlled_timed_migration_remains_valid() {
+        let result = validate_migration_config(
+            Some("127.0.0.1:5000".parse().unwrap()),
+            Some(1.0),
+            false,
+            250,
+            250,
+        );
+
+        assert!(result.is_ok());
     }
 }
