@@ -3,6 +3,11 @@
 import argparse
 from pathlib import Path
 
+from mininet.log import info, setLogLevel
+from mininet.term import makeTerm
+
+from dual_path import create_network
+
 
 PRESETS = {
     "diagnostic": {
@@ -14,20 +19,21 @@ PRESETS = {
     },
     "preview": {
         "fps": 30,
-        "duration_seconds": 10,
+        "duration_seconds": 5,
         "rebind": "10.0.2.2:0",
-        "rebind_after_seconds": 5.0,
+        "rebind_after_seconds": 2.5,
         "preview": True,
     },
 }
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BINARY = REPO_ROOT / "target" / "release" / "quic-vid"
+CARGO_ROOT = REPO_ROOT / "quic-vid"
+BINARY = CARGO_ROOT / "target" / "release" / "quic-vid"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Prepare a QuicVid dual-path migration demo."
+        description="Run the QuicVid dual-path migration demo."
     )
 
     parser.add_argument(
@@ -137,25 +143,78 @@ def client_command(args: argparse.Namespace) -> str:
 
 
 def print_configuration(args: argparse.Namespace) -> None:
-    print("QuicVid migration demo configuration")
-    print()
-    print(f"Preset:              {args.preset}")
-    print(f"FPS:                 {args.fps}")
-    print(f"Duration:            {args.duration_seconds} s")
-    print(f"Rebind target:       {args.rebind}")
-    print(f"Rebind after:        {args.rebind_after_seconds} s")
-    print(f"Preview:             {'yes' if args.preview else 'no'}")
-    print()
+    info("\n*** QuicVid migration demo configuration\n")
+    info(f"*** Preset:              {args.preset}\n")
+    info(f"*** FPS:                 {args.fps}\n")
+    info(f"*** Duration:            {args.duration_seconds} s\n")
+    info(f"*** Rebind target:       {args.rebind}\n")
+    info(
+        f"*** Rebind after:        "
+        f"{args.rebind_after_seconds} s\n"
+    )
+    info(
+        f"*** Preview:             "
+        f"{'yes' if args.preview else 'no'}\n"
+    )
 
 
-def print_commands(args: argparse.Namespace) -> None:
-    print("Server command:")
-    print(server_command(args))
-    print()
+def launch_terminals(net, args: argparse.Namespace) -> None:
+    client = net.get("client")
+    server = net.get("server")
+    r1 = net.get("r1")
+    r2 = net.get("r2")
 
-    print("Client command:")
-    print(client_command(args))
-    print()
+    server_cmd = server_command(args)
+    client_cmd = client_command(args)
+
+    info("*** Launching server terminal\n")
+    makeTerm(
+        server,
+        title="QuicVid Server",
+        cmd=(
+            "bash -lc '"
+            f"{server_cmd}; "
+            "exec bash'"
+        ),
+    )
+
+    info("*** Launching Path A capture\n")
+    makeTerm(
+        r1,
+        title="Path A - r1",
+        cmd=(
+            "bash -lc '"
+            "tcpdump -ni r1-eth0 udp port 4433; "
+            "exec bash'"
+        ),
+    )
+
+    info("*** Launching Path B capture\n")
+    makeTerm(
+        r2,
+        title="Path B - r2",
+        cmd=(
+            "bash -lc '"
+            "tcpdump -ni r2-eth0 udp port 4433; "
+            "exec bash'"
+        ),
+    )
+
+    info("*** Launching client terminal\n")
+    makeTerm(
+        client,
+        title="QuicVid Client",
+        cmd=(
+            "bash -lc '"
+            "echo \"QuicVid migration demo\"; "
+            "echo; "
+            f"echo \"{client_cmd}\"; "
+            "echo; "
+            "read -p \"Press Enter to start...\"; "
+            f"{client_cmd}; "
+            "exec bash'"
+        ),
+    )
 
 
 def main() -> None:
@@ -163,9 +222,28 @@ def main() -> None:
     args = apply_preset(args)
     validate_args(args)
 
+    if not BINARY.exists():
+	    raise FileNotFoundError(
+	        f"QuicVid release binary not found: {BINARY}\n"
+	        "Run: cargo build --release --manifest-path quic-vid/Cargo.toml"
+	    )
+
     print_configuration(args)
-    print_commands(args)
+
+    info("*** Creating dual-path Mininet topology\n")
+    net = create_network()
+
+    try:
+        launch_terminals(net, args)
+
+        info("\n*** Migration demo ready\n")
+        info("*** Press Enter in the client terminal to start\n")
+        input("*** Press Enter here when finished to stop Mininet...\n")
+    finally:
+        info("*** Stopping network\n")
+        net.stop()
 
 
 if __name__ == "__main__":
+    setLogLevel("info")
     main()
