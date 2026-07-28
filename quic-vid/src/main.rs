@@ -4,6 +4,7 @@ mod frame_assembler;
 mod frame_tracker;
 mod media;
 mod migration;
+mod path_discovery;
 mod path_health;
 mod preview;
 mod server;
@@ -123,6 +124,13 @@ enum Command {
         )]
         quality: u8,
     },
+
+    /// Print alternative local IPv4 candidates.
+    DiscoverPaths {
+        /// Currently active local IPv4 address.
+        #[arg(long)]
+        exclude_ip: std::net::Ipv4Addr,
+    },
 }
 
 #[tokio::main]
@@ -192,6 +200,27 @@ async fn main() -> anyhow::Result<()> {
             duration_seconds,
             quality,
         } => run_preview_test_stream(fps, duration_seconds, quality),
+
+        Command::DiscoverPaths { exclude_ip } => {
+            let candidates = path_discovery::discover_ipv4_candidates(exclude_ip)?;
+
+            println!("event=path_discovery_started exclude_ip={}", exclude_ip);
+
+            if candidates.is_empty() {
+                println!("event=path_discovery_failed reason=no_alternative");
+            } else {
+                for candidate in candidates {
+                    println!(
+                        "event=path_candidate_found \
+                         interface={} \
+                         candidate_ip={}",
+                        candidate.interface_name, candidate.local_ip,
+                    );
+                }
+            }
+
+            Ok(())
+        }
     }
 }
 
