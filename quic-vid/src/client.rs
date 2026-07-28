@@ -264,7 +264,7 @@ pub async fn run(
         media_run.id(), fps, duration_seconds, jpeg_quality, total_frames,
     );
 
-    let transport = connect_session(connect, bind, media_run.id()).await?;
+    let mut transport = connect_session(connect, bind, media_run.id()).await?;
 
     let health_started = Instant::now();
 
@@ -471,6 +471,9 @@ pub async fn run(
                                     RecoveryStrategy::Reconnect => {
                                         let requested_local =
                                             SocketAddr::new(candidate.local_ip.into(), 0);
+                                        let old_session_id = transport.session_id;
+                                        let old_connection_id = transport.connection_id();
+                                        let old_local = transport.local_addr()?;
 
                                         println!(
                                             "event=reconnect_requested \
@@ -485,13 +488,76 @@ pub async fn run(
                                             active_local,
                                             requested_local,
                                             candidate.interface_name,
-                                            transport.session_id,
-                                            transport.connection_id(),
+                                            old_session_id,
+                                            old_connection_id,
                                         );
 
-                                        anyhow::bail!(
-                                            "proactive reconnect was selected but replacement \
-                                         connection establishment is not implemented yet"
+                                        println!(
+                                            "event=reconnect_started \
+                                         elapsed_seconds={:.3} \
+                                         media_run={} \
+                                         old_session={} \
+                                         old_connection={} \
+                                         old_local={} \
+                                         requested_local={} \
+                                         interface={}",
+                                            media_run.elapsed(Instant::now()).as_secs_f64(),
+                                            media_run.id(),
+                                            old_session_id,
+                                            old_connection_id,
+                                            old_local,
+                                            requested_local,
+                                            candidate.interface_name,
+                                        );
+
+                                        let replacement = connect_session(
+                                            connect,
+                                            requested_local,
+                                            media_run.id(),
+                                        )
+                                        .await?;
+
+                                        let new_session_id = replacement.session_id;
+                                        let new_connection_id = replacement.connection_id();
+                                        let new_local = replacement.local_addr()?;
+                                        let new_ack_count =
+                                            replacement.connection.stats().frame_rx.acks;
+                                        let health_reset_at = Instant::now();
+
+                                        let old_transport =
+                                            std::mem::replace(&mut transport, replacement);
+
+                                        old_transport
+                                            .connection
+                                            .close(0u32.into(), b"replaced by proactive reconnect");
+
+                                        *monitor = PathHealthMonitor::new(
+                                            Duration::from_millis(suspect_after_ms),
+                                            Duration::from_millis(challenge_after_ms),
+                                            health_reset_at,
+                                            new_ack_count,
+                                        );
+                                        migration = MigrationController::new();
+                                        automatic_migration_pending = false;
+
+                                        println!(
+                                            "event=reconnect_completed \
+                                         elapsed_seconds={:.3} \
+                                         media_run={} \
+                                         old_session={} \
+                                         new_session={} \
+                                         old_connection={} \
+                                         new_connection={} \
+                                         old_local={} \
+                                         new_local={}",
+                                            media_run.elapsed(Instant::now()).as_secs_f64(),
+                                            media_run.id(),
+                                            old_session_id,
+                                            new_session_id,
+                                            old_connection_id,
+                                            new_connection_id,
+                                            old_local,
+                                            new_local,
                                         );
                                     }
                                 },
