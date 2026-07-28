@@ -18,6 +18,7 @@ PRESETS = {
         "rebind_after_seconds": 0.5,
         "preview": False,
         "auto_migrate": False,
+        "recovery_strategy": "migrate",
         "suspect_after_ms": 250,
         "challenge_after_ms": 250,
         "impair_after_seconds": None,
@@ -32,6 +33,7 @@ PRESETS = {
         "rebind_after_seconds": 2.5,
         "preview": True,
         "auto_migrate": False,
+        "recovery_strategy": "migrate",
         "suspect_after_ms": 250,
         "challenge_after_ms": 250,
         "impair_after_seconds": None,
@@ -46,6 +48,7 @@ PRESETS = {
         "rebind_after_seconds": None,
         "preview": False,
         "auto_migrate": True,
+        "recovery_strategy": "migrate",
         "suspect_after_ms": 250,
         "challenge_after_ms": 1000,
         "impair_after_seconds": 2.0,
@@ -60,6 +63,22 @@ PRESETS = {
         "rebind_after_seconds": None,
         "preview": False,
         "auto_migrate": True,
+        "recovery_strategy": "migrate",
+        "suspect_after_ms": 250,
+        "challenge_after_ms": 500,
+        "impair_after_seconds": 2.0,
+        "impair_duration_seconds": None,
+        "quiet_media_logs": True,
+        "quiet_datagram_logs": False,
+    },
+    "reconnect-sustained": {
+        "fps": 10,
+        "duration_seconds": 6,
+        "rebind": None,
+        "rebind_after_seconds": None,
+        "preview": False,
+        "auto_migrate": True,
+        "recovery_strategy": "reconnect",
         "suspect_after_ms": 250,
         "challenge_after_ms": 500,
         "impair_after_seconds": 2.0,
@@ -116,6 +135,12 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Enable or disable automatic path-health monitoring",
+    )
+    parser.add_argument(
+        "--recovery-strategy",
+        choices=("migrate", "reconnect"),
+        default=None,
+        help="Recovery action at Challenging (default comes from preset)",
     )
     parser.add_argument(
         "--suspect-after-ms",
@@ -180,6 +205,7 @@ def apply_preset(args: argparse.Namespace) -> argparse.Namespace:
         "rebind_after_seconds",
         "preview",
         "auto_migrate",
+        "recovery_strategy",
         "suspect_after_ms",
         "challenge_after_ms",
         "impair_after_seconds",
@@ -207,6 +233,9 @@ def validate_args(args: argparse.Namespace) -> None:
 
     if args.duration_seconds <= 0:
         raise ValueError("--duration-seconds must be greater than zero")
+
+    if args.recovery_strategy == "reconnect" and not args.auto_migrate:
+        raise ValueError("--recovery-strategy reconnect requires --auto-migrate")
 
     if args.auto_migrate:
         if args.rebind is not None or args.rebind_after_seconds is not None:
@@ -280,6 +309,8 @@ def client_command(args: argparse.Namespace) -> str:
         parts.extend(
             [
                 "--auto-migrate",
+                "--recovery-strategy",
+                args.recovery_strategy,
                 "--suspect-after-ms",
                 str(args.suspect_after_ms),
                 "--challenge-after-ms",
@@ -373,6 +404,7 @@ def print_configuration(args: argparse.Namespace) -> None:
 
     if args.auto_migrate:
         info("*** Mode:                automatic path health\n")
+        info(f"*** Recovery strategy:   {args.recovery_strategy}\n")
         info(f"*** Suspect after:       {args.suspect_after_ms} ms\n")
         info(f"*** Challenge after:     {args.challenge_after_ms} ms\n")
 
@@ -389,6 +421,7 @@ def print_configuration(args: argparse.Namespace) -> None:
             )
     else:
         info("*** Mode:                controlled rebind\n")
+        info("*** Recovery strategy:   migrate\n")
         info(f"*** Rebind target:       {args.rebind}\n")
         info(f"*** Rebind after:        {args.rebind_after_seconds} s\n")
 
