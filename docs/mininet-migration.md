@@ -1,9 +1,15 @@
 # Mininet QUIC Migration Demo
 
-This document describes the reproducible Mininet setup used to demonstrate
-QuicVid QUIC connection migration across two network paths while preserving the
-same media session, and to exercise the automatic path-health logic introduced
-for Milestone 4.
+This document describes the reproducible Mininet setup used to compare two
+automatic recovery strategies across the same dual-path network:
+
+* QUIC connection migration, which preserves the existing Quinn connection and
+  QuicVid session;
+* QUIC reconnect, which creates a replacement connection and session while
+  preserving the same media run and live frame timeline.
+
+The setup also includes the controlled and automatic migration scenarios
+introduced for Milestone 4.
 
 The demo uses a fixed server service address and two client-side source
 addresses:
@@ -20,8 +26,9 @@ QuicVid session continue after the path change.
 
 Automatic path-health presets keep the client on Path A and introduce a
 reproducible impairment. A transient outage verifies recovery on the original
-path, while sustained degradation drives automatic discovery, selection, and
-migration to Path B.
+path. Sustained degradation drives automatic discovery and selection of Path B,
+then performs either migration or reconnect according to the selected recovery
+strategy.
 
 ## Topology
 
@@ -292,6 +299,80 @@ UDP socket for `Endpoint::rebind()`.
 A successful rebind call is not treated as proof of recovery. The controller
 remains in `Migrating` until new QUIC ACK progress is observed.
 
+
+### Reconnect-sustained preset
+
+```bash
+sudo python3 scripts/mininet/migration_demo.py --preset reconnect-sustained
+```
+
+This preset uses the same sustained Path A failure and path-health thresholds as
+`health-sustained`, but selects reconnect instead of migration:
+
+```text
+FPS:                 10
+Duration:            6 s
+Initial path:        10.0.1.2 / Path A
+Automatic recovery:  enabled
+Recovery strategy:   reconnect
+Suspect after:       250 ms
+Challenge after:     500 ms
+Path A impairment:   starts at 2.0 s
+Impairment duration: sustained
+Preview:             disabled
+```
+
+The detector and alternate-path discovery are shared with migration:
+
+```text
+Healthy
+  |
+  | ACK progress stops
+  v
+Suspect
+  |
+  | degradation persists
+  v
+Challenging
+  |
+  | discover and select 10.0.2.2
+  v
+Reconnect
+```
+
+At `Challenging`, the client:
+
+1. creates a new Quinn endpoint bound to Path B;
+2. establishes a new QUIC connection;
+3. creates a new QuicVid session UUID;
+4. performs a second `HELLO` / `OK` handshake using the same media-run UUID;
+5. replaces the active transport only after the new session is ready;
+6. resumes from the current live frame instead of replaying elapsed frames.
+
+A successful run should emit:
+
+```text
+event=reconnect_requested ...
+event=reconnect_started ...
+event=client_endpoint_created ... local=10.0.2.2:<port>
+event=session_created session=<new-session>
+event=connected ... local=10.0.2.2:<port>
+event=hello_sent media_run=<same-run> session=<new-session>
+event=hello_acknowledged media_run=<same-run> session=<new-session>
+event=reconnect_completed ...
+event=media_resumed_after_reconnect ...
+event=media_run_completed ... sessions=2
+```
+
+Unlike migration, reconnect deliberately changes both the Quinn connection
+identity and QuicVid session UUID. The media-run UUID and time-derived frame
+timeline remain unchanged.
+
+The server may not immediately report the old session as disconnected. If Path A
+is already unavailable, the client's QUIC close packet may not reach the server;
+the old server task then remains silent until Quinn's idle timeout. Immediate
+cross-session supersession tracking is deferred to the measurement work.
+
 ## Automatic migration behavior
 
 In the sustained scenario, packet captures should show:
@@ -405,6 +486,7 @@ quic-vid client \
   --connect 10.0.0.1:4433 \
   --bind 10.0.1.2:0 \
   --auto-migrate \
+  --recovery-strategy <migrate|reconnect> \
   --suspect-after-ms <threshold> \
   --challenge-after-ms <threshold> \
   --fps <fps> \
@@ -412,9 +494,14 @@ quic-vid client \
 ```
 
 Automatic mode deliberately does not receive a `--rebind` target. Reaching
-`Challenging` triggers local IPv4 candidate discovery and selection. The client
-then rebinds the existing Quinn endpoint to the selected address and waits for
-new ACK progress before returning to `Healthy`.
+`Challenging` triggers local IPv4 candidate discovery and selection.
+
+With `--recovery-strategy migrate`, the client rebinds the existing Quinn
+endpoint and waits for new ACK progress before returning to `Healthy`.
+
+With `--recovery-strategy reconnect`, the client creates a replacement endpoint,
+connection, and session on the selected address, performs a new handshake, and
+continues the existing media run from its current live frame.
 
 This allows the server and packet capture windows to be ready before media
 transmission begins.
@@ -533,6 +620,7 @@ The launcher applies logging defaults suited to each scenario:
 | `preview` | shown | suppressed | Preview with reduced chunk-level noise |
 | `health-transient` | suppressed | suppressed | Focus on path-health recovery |
 | `health-sustained` | suppressed | suppressed | Focus on automatic migration |
+| `reconnect-sustained` | suppressed | suppressed | Focus on proactive reconnect |
 
 These are preset defaults rather than fixed modes. They can be overridden with
 the launcher options listed below. For example, this keeps per-frame output while
@@ -574,6 +662,7 @@ Available overrides include:
 --no-preview
 --auto-migrate
 --no-auto-migrate
+--recovery-strategy {migrate,reconnect}
 --suspect-after-ms
 --challenge-after-ms
 --impair-after-seconds
@@ -595,6 +684,50 @@ sudo python3 scripts/mininet/migration_demo.py \
 
 The migration trigger must be greater than zero and smaller than the total run
 duration.
+
+## Verify recovery logs
+
+The repository includes a reusable verifier:
+
+```text
+scripts/mininet/verify_recovery.py
+```
+
+Verify a reconnect run:
+
+```bash
+python3 scripts/mininet/verify_recovery.py \
+  --strategy reconnect \
+  --client-log /tmp/quicvid-reconnect/client.log \
+  --server-log /tmp/quicvid-reconnect/server.log
+```
+
+Verify a migration run:
+
+```bash
+python3 scripts/mininet/verify_recovery.py \
+  --strategy migrate \
+  --client-log /tmp/quicvid-migrate/client.log \
+  --server-log /tmp/quicvid-migrate/server.log
+```
+
+A successful verification prints:
+
+```text
+PASS: reconnect recovery evidence is consistent
+```
+
+or:
+
+```text
+PASS: migrate recovery evidence is consistent
+```
+
+The verifier checks the selected strategy, path transition, connection and
+session identities, `HELLO` count, media-run continuity, completion, and the
+absence of events belonging to the other recovery strategy. It exits with a
+nonzero status and lists each failed expectation when the supplied logs do not
+match the requested strategy.
 
 ## Verify the topology separately
 
@@ -691,12 +824,14 @@ sudo mn -c
 
 ## Scope and current limitations
 
-This setup now supports three reproducible Mininet experiments:
+This setup now supports four reproducible Mininet experiments:
 
 * controlled client-side QUIC connection migration from Path A to Path B;
 * transient path degradation followed by recovery on Path A;
 * sustained Path A failure followed by automatic discovery and migration to
-  Path B.
+  Path B;
+* sustained Path A failure followed by automatic discovery and reconnect on
+  Path B while preserving the media-run timeline.
 
 The automatic migration path is:
 
@@ -720,10 +855,16 @@ Current limitations are:
   timeout remains the final failure mechanism;
 * the automatic scenario is currently validated in the controlled Mininet
   topology;
-* Wi-Fi or NetworkManager-triggered migration, physical wireless handover,
-  repeated statistical evaluation, threshold sweeps, reconnect baselines, and
-  TCP baselines remain outside this setup.
+* Wi-Fi or NetworkManager-triggered migration and physical wireless handover
+  remain outside this setup;
+* reconnect currently relies on the client and server logs rather than shared
+  server-side cross-session aggregation;
+* an old reconnect session may remain silent on the server until Quinn's idle
+  timeout when the failed path cannot deliver the close packet;
+* repeated statistical evaluation, threshold sweeps, and TCP baselines remain
+  outside this setup.
 
 The purpose of this setup is to provide a deterministic environment for
 controlled migration, automatic degradation detection, alternative-address
-discovery, and recovery confirmation before quantitative evaluation.
+discovery, migration-versus-reconnect recovery, and repeatable log verification
+before quantitative evaluation.
