@@ -154,6 +154,15 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Suppress per-datagram client logs while retaining per-frame logs.",
     )
+    parser.add_argument(
+        "--log-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Write client, server, impairment, and packet-capture logs to this "
+            "directory. Existing files are overwritten."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -299,6 +308,19 @@ def terminal_command(command: str) -> str:
     return f"bash -lc {shlex.quote(command + '; exec bash')}"
 
 
+def logged_command(command: str, log_path: Path | None) -> str:
+    if log_path is None:
+        return command
+
+    quoted_log = shlex.quote(str(log_path))
+    return f"set -o pipefail; {command} 2>&1 | tee {quoted_log}"
+
+
+def capture_command(interface: str, log_path: Path | None) -> str:
+    command = f"tcpdump -l -ni {shlex.quote(interface)} udp port 4433"
+    return logged_command(command, log_path)
+
+
 def impairment_command(args: argparse.Namespace) -> str | None:
     if args.impair_after_seconds is None:
         return None
@@ -336,6 +358,10 @@ def print_configuration(args: argparse.Namespace) -> None:
     info(f"*** FPS:                 {args.fps}\n")
     info(f"*** Duration:            {args.duration_seconds} s\n")
     info(f"*** Preview:             {'yes' if args.preview else 'no'}\n")
+    info(
+        "*** Log directory:       "
+        f"{args.log_dir if args.log_dir is not None else 'disabled'}\n"
+    )
     info(
         "*** Media logs:          "
         f"{'suppressed' if args.quiet_media_logs else 'enabled'}\n"
@@ -377,24 +403,34 @@ def launch_terminals(net, args: argparse.Namespace) -> None:
     client_cmd = client_command(args)
     impair_cmd = impairment_command(args)
 
+    server_log = args.log_dir / "server.log" if args.log_dir else None
+    client_log = args.log_dir / "client.log" if args.log_dir else None
+    path_a_log = args.log_dir / "path-a-tcpdump.log" if args.log_dir else None
+    path_b_log = args.log_dir / "path-b-tcpdump.log" if args.log_dir else None
+    impairment_log = args.log_dir / "impairment.log" if args.log_dir else None
+
     if impair_cmd is not None:
         client.cmd(f"rm -f {shlex.quote(str(HEALTH_START_MARKER))}")
 
     info("*** Launching server terminal\n")
-    makeTerm(server, title="QuicVid Server", cmd=terminal_command(server_cmd))
+    makeTerm(
+        server,
+        title="QuicVid Server",
+        cmd=terminal_command(logged_command(server_cmd, server_log)),
+    )
 
     info("*** Launching Path A capture\n")
     makeTerm(
         r1,
         title="Path A - r1",
-        cmd=terminal_command("tcpdump -ni r1-eth0 udp port 4433"),
+        cmd=terminal_command(capture_command("r1-eth0", path_a_log)),
     )
 
     info("*** Launching Path B capture\n")
     makeTerm(
         r2,
         title="Path B - r2",
-        cmd=terminal_command("tcpdump -ni r2-eth0 udp port 4433"),
+        cmd=terminal_command(capture_command("r2-eth0", path_b_log)),
     )
 
     if impair_cmd is not None:
@@ -402,7 +438,7 @@ def launch_terminals(net, args: argparse.Namespace) -> None:
         makeTerm(
             r1,
             title="Path A Impairment",
-            cmd=terminal_command(impair_cmd),
+            cmd=terminal_command(logged_command(impair_cmd, impairment_log)),
         )
 
     if impair_cmd is not None:
@@ -412,13 +448,14 @@ def launch_terminals(net, args: argparse.Namespace) -> None:
     else:
         start_client_cmd = client_cmd
 
+    logged_client_cmd = logged_command(start_client_cmd, client_log)
     client_shell = (
         "echo 'QuicVid migration demo'; "
         "echo; "
         f"echo {shlex.quote(client_cmd)}; "
         "echo; "
         "read -p 'Press Enter to start...'; "
-        f"{start_client_cmd}"
+        f"{logged_client_cmd}"
     )
 
     info("*** Launching client terminal\n")
@@ -439,6 +476,18 @@ def main() -> None:
             f"QuicVid release binary not found: {BINARY}\n"
             "Run: cargo build --release --manifest-path quic-vid/Cargo.toml"
         )
+
+    if args.log_dir is not None:
+        args.log_dir = args.log_dir.expanduser().resolve()
+        args.log_dir.mkdir(parents=True, exist_ok=True)
+        for filename in (
+            "client.log",
+            "server.log",
+            "path-a-tcpdump.log",
+            "path-b-tcpdump.log",
+            "impairment.log",
+        ):
+            (args.log_dir / filename).unlink(missing_ok=True)
 
     print_configuration(args)
 
