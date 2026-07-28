@@ -55,7 +55,7 @@ PRESETS = {
     },
     "health-sustained": {
         "fps": 10,
-        "duration_seconds": 3,
+        "duration_seconds": 6,
         "rebind": None,
         "rebind_after_seconds": None,
         "preview": False,

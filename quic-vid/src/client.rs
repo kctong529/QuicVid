@@ -219,6 +219,7 @@ pub async fn run(
     let mut sent_datagrams = 0u64;
     let mut last_frame_id = None;
     let mut rebound = false;
+    let mut automatic_migration_pending = false;
     let mut migration = MigrationController::new();
 
     println!(
@@ -283,6 +284,7 @@ pub async fn run(
 
                 if event != PathHealthEvent::None {
                     let active_local = endpoint.local_addr()?;
+                    let state_before_event = migration.state();
 
                     let action = handle_path_health_event(
                         event,
@@ -292,18 +294,83 @@ pub async fn run(
                         connection.stable_id(),
                     )?;
 
-                    if action == PathHealthAction::DiscoverAlternative {
+                    if event == PathHealthEvent::Recovered
+                        && state_before_event == MigrationState::Migrating
+                    {
+                        println!(
+                            "event=migration_confirmed \
+                             elapsed_seconds={:.3} \
+                             active_local={} \
+                             ack_count={} \
+                             connection={}",
+                            video_started.elapsed().as_secs_f64(),
+                            endpoint.local_addr()?,
+                            ack_count,
+                            connection.stable_id(),
+                        );
+
+                        automatic_migration_pending = false;
+                    }
+
+                    if action == PathHealthAction::DiscoverAlternative
+                        && !automatic_migration_pending
+                    {
                         match discover_alternative_path(active_local)? {
                             AlternativeDiscoveryResult::Selected(candidate) => {
+                                let old_local = endpoint.local_addr()?;
+                                let requested_local = SocketAddr::new(candidate.local_ip.into(), 0);
+
                                 println!(
                                     "event=automatic_migration_candidate_ready \
                                      interface={} \
-                                     candidate_local={}:0 \
+                                     candidate_local={} \
                                      connection={}",
                                     candidate.interface_name,
-                                    candidate.local_ip,
+                                    requested_local,
                                     connection.stable_id(),
                                 );
+
+                                println!(
+                                    "event=automatic_rebind_started \
+                                     elapsed_seconds={:.3} \
+                                     old_local={} \
+                                     requested_local={} \
+                                     interface={} \
+                                     connection={}",
+                                    video_started.elapsed().as_secs_f64(),
+                                    old_local,
+                                    requested_local,
+                                    candidate.interface_name,
+                                    connection.stable_id(),
+                                );
+
+                                let new_local = rebind_endpoint(&endpoint, requested_local)?;
+
+                                migration.transition(
+                                    MigrationState::Migrating,
+                                    MigrationReason::AlternatePathReady,
+                                    MigrationContext {
+                                        elapsed: video_started.elapsed(),
+                                        active_local: old_local,
+                                        candidate_local: Some(new_local),
+                                        connection_id: connection.stable_id(),
+                                    },
+                                )?;
+
+                                println!(
+                                    "event=endpoint_rebound \
+                                     mode=automatic \
+                                     elapsed_seconds={:.3} \
+                                     old_local={} \
+                                     new_local={} \
+                                     connection={}",
+                                    video_started.elapsed().as_secs_f64(),
+                                    old_local,
+                                    new_local,
+                                    connection.stable_id(),
+                                );
+
+                                automatic_migration_pending = true;
                             }
 
                             AlternativeDiscoveryResult::NoAlternative => {}
@@ -502,11 +569,15 @@ fn handle_path_health_event(
         }
 
         PathHealthEvent::Recovered => {
-            migration.transition(
-                MigrationState::Healthy,
-                MigrationReason::AckProgressRecovered,
-                context,
-            )?;
+            let reason = match migration.state() {
+                MigrationState::Migrating => MigrationReason::MigrationCompleted,
+                MigrationState::Suspect | MigrationState::Challenging => {
+                    MigrationReason::AckProgressRecovered
+                }
+                MigrationState::Healthy => return Ok(PathHealthAction::None),
+            };
+
+            migration.transition(MigrationState::Healthy, reason, context)?;
 
             Ok(PathHealthAction::None)
         }
@@ -754,6 +825,57 @@ mod tests {
 
         assert_eq!(action, PathHealthAction::DiscoverAlternative);
         assert_eq!(migration.state(), MigrationState::Challenging);
+    }
+
+    #[test]
+    fn recovery_after_rebind_confirms_automatic_migration() {
+        let mut migration = MigrationController::new();
+        let old_local: SocketAddr = "10.0.1.2:5000".parse().unwrap();
+        let new_local: SocketAddr = "10.0.2.2:6000".parse().unwrap();
+
+        move_to_challenging(&mut migration);
+
+        migration
+            .transition(
+                MigrationState::Migrating,
+                MigrationReason::AlternatePathReady,
+                MigrationContext {
+                    elapsed: Duration::from_millis(800),
+                    active_local: old_local,
+                    candidate_local: Some(new_local),
+                    connection_id: TEST_CONNECTION_ID,
+                },
+            )
+            .unwrap();
+
+        let action = handle_path_health_event(
+            PathHealthEvent::Recovered,
+            &mut migration,
+            Duration::from_millis(900),
+            new_local,
+            TEST_CONNECTION_ID,
+        )
+        .unwrap();
+
+        assert_eq!(action, PathHealthAction::None);
+        assert_eq!(migration.state(), MigrationState::Healthy);
+    }
+
+    #[test]
+    fn recovery_event_while_healthy_is_ignored() {
+        let mut migration = MigrationController::new();
+
+        let action = handle_path_health_event(
+            PathHealthEvent::Recovered,
+            &mut migration,
+            Duration::from_millis(100),
+            test_local_address(),
+            TEST_CONNECTION_ID,
+        )
+        .unwrap();
+
+        assert_eq!(action, PathHealthAction::None);
+        assert_eq!(migration.state(), MigrationState::Healthy);
     }
 
     #[test]
