@@ -284,6 +284,8 @@ pub async fn run(
     let mut sent_frames = 0u64;
     let mut sent_datagrams = 0u64;
     let mut last_frame_id = None;
+    let mut session_count = 1u32;
+    let mut reconnect_resume_pending: Option<(Uuid, Option<u64>)> = None;
     let mut rebound = false;
     let mut automatic_migration_pending = false;
     let mut migration = MigrationController::new();
@@ -474,6 +476,7 @@ pub async fn run(
                                         let old_session_id = transport.session_id;
                                         let old_connection_id = transport.connection_id();
                                         let old_local = transport.local_addr()?;
+                                        let last_frame_before_reconnect = last_frame_id;
 
                                         println!(
                                             "event=reconnect_requested \
@@ -539,6 +542,9 @@ pub async fn run(
                                         );
                                         migration = MigrationController::new();
                                         automatic_migration_pending = false;
+                                        session_count += 1;
+                                        reconnect_resume_pending =
+                                            Some((new_session_id, last_frame_before_reconnect));
 
                                         println!(
                                             "event=reconnect_completed \
@@ -643,15 +649,38 @@ pub async fn run(
             }
         }
 
-        let frame_id = media_run.current_frame_id(now);
+        let frame_now = Instant::now();
+        let frame_id = media_run.current_frame_id(frame_now);
 
-        if media_run.is_complete(now) || frame_id >= total_frames {
+        if media_run.is_complete(frame_now) || frame_id >= total_frames {
             break;
         }
 
         if last_frame_id == Some(frame_id) {
             tokio::time::sleep(Duration::from_millis(1)).await;
             continue;
+        }
+
+        if let Some((reconnected_session, last_before)) = reconnect_resume_pending.take() {
+            let skipped_frames = last_before
+                .map(|last| frame_id.saturating_sub(last.saturating_add(1)))
+                .unwrap_or(0);
+
+            println!(
+                "event=media_resumed_after_reconnect \
+                 media_run={} \
+                 session={} \
+                 last_frame_before_reconnect={} \
+                 first_frame_after_reconnect={} \
+                 skipped_frames={}",
+                media_run.id(),
+                reconnected_session,
+                last_before
+                    .map(|frame| frame.to_string())
+                    .unwrap_or_else(|| "none".to_owned()),
+                frame_id,
+                skipped_frames,
+            );
         }
 
         last_frame_id = Some(frame_id);
@@ -745,9 +774,10 @@ pub async fn run(
     transport.endpoint.wait_idle().await;
 
     println!(
-        "event=media_run_completed media_run={} final_frame_exclusive={} sessions=1",
+        "event=media_run_completed media_run={} final_frame_exclusive={} sessions={}",
         media_run.id(),
         total_frames,
+        session_count,
     );
     println!(
         "event=client_stopped media_run={} session={}",
