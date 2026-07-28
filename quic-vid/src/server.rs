@@ -86,21 +86,25 @@ async fn handle_connection(
     let (mut send, mut recv) = connection.accept_bi().await?;
     let request = recv.read_to_end(1024).await?;
     let request = String::from_utf8(request)?;
-    let session_id = control::parse_hello(&request)?;
+    let hello = control::parse_hello(&request)?;
+    let media_run_id = hello.media_run_id;
+    let session_id = hello.session_id;
 
     println!(
-        "event=client_hello session={} connection={} peer={}",
+        "event=client_hello media_run={} session={} connection={} peer={}",
+        media_run_id,
         session_id,
         connection.stable_id(),
         connection.remote_address(),
     );
 
-    let response = control::acknowledgement(session_id);
+    let response = control::acknowledgement(media_run_id, session_id);
     send.write_all(response.as_bytes()).await?;
     send.finish()?;
 
     println!(
-        "event=hello_acknowledged session={} connection={}",
+        "event=hello_acknowledged media_run={} session={} connection={}",
+        media_run_id,
         session_id,
         connection.stable_id(),
     );

@@ -1,24 +1,53 @@
 use uuid::Uuid;
 
-pub fn hello(session_id: Uuid) -> String {
-    format!("HELLO {session_id}\n")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hello {
+    pub media_run_id: Uuid,
+    pub session_id: Uuid,
 }
 
-pub fn parse_hello(message: &str) -> anyhow::Result<Uuid> {
-    let session_text = message
-        .trim()
-        .strip_prefix("HELLO ")
-        .ok_or_else(|| anyhow::anyhow!("invalid control hello: {message:?}"))?;
-
-    Ok(Uuid::parse_str(session_text)?)
+pub fn hello(media_run_id: Uuid, session_id: Uuid) -> String {
+    format!("HELLO {media_run_id} {session_id}\n")
 }
 
-pub fn acknowledgement(session_id: Uuid) -> String {
-    format!("OK {session_id}\n")
+pub fn parse_hello(message: &str) -> anyhow::Result<Hello> {
+    let mut parts = message.split_whitespace();
+
+    let message_type = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing control message type"))?;
+
+    if message_type != "HELLO" {
+        anyhow::bail!("expected HELLO control message, got {message_type:?}");
+    }
+
+    let media_run_text = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing HELLO media-run ID"))?;
+    let session_text = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing HELLO session ID"))?;
+
+    if parts.next().is_some() {
+        anyhow::bail!("unexpected extra fields in HELLO message");
+    }
+
+    Ok(Hello {
+        media_run_id: Uuid::parse_str(media_run_text)?,
+        session_id: Uuid::parse_str(session_text)?,
+    })
 }
 
-pub fn validate_acknowledgement(message: &str, expected_session_id: Uuid) -> anyhow::Result<()> {
-    let expected = format!("OK {expected_session_id}");
+pub fn acknowledgement(media_run_id: Uuid, session_id: Uuid) -> String {
+    format!("OK {media_run_id} {session_id}\n")
+}
+
+pub fn validate_acknowledgement(
+    message: &str,
+    expected_media_run_id: Uuid,
+    expected_session_id: Uuid,
+) -> anyhow::Result<()> {
+    let expected = format!("OK {expected_media_run_id} {expected_session_id}");
 
     if message.trim() != expected {
         anyhow::bail!(
@@ -90,51 +119,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hello_round_trip_preserves_session_id() {
+    fn hello_round_trip_preserves_media_run_and_session_ids() {
+        let media_run_id = Uuid::new_v4();
         let session_id = Uuid::new_v4();
 
-        let message = hello(session_id);
+        let message = hello(media_run_id, session_id);
         let parsed = parse_hello(&message).unwrap();
 
-        assert_eq!(parsed, session_id);
+        assert_eq!(parsed.media_run_id, media_run_id);
+        assert_eq!(parsed.session_id, session_id);
     }
 
     #[test]
     fn parse_hello_rejects_invalid_uuid() {
-        let result = parse_hello("HELLO not-a-uuid\n");
+        let session_id = Uuid::new_v4();
+        let result = parse_hello(&format!("HELLO not-a-uuid {session_id}\n"));
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_hello_rejects_missing_identity() {
+        let media_run_id = Uuid::new_v4();
+
+        assert!(parse_hello(&format!("HELLO {media_run_id}\n")).is_err());
     }
 
     #[test]
     fn parse_hello_rejects_wrong_message_type() {
+        let media_run_id = Uuid::new_v4();
         let session_id = Uuid::new_v4();
-        let message = format!("GOODBYE {session_id}\n");
+        let message = format!("GOODBYE {media_run_id} {session_id}\n");
 
-        let result = parse_hello(&message);
-
-        assert!(result.is_err());
+        assert!(parse_hello(&message).is_err());
     }
 
     #[test]
-    fn acknowledgement_accepts_matching_session_id() {
+    fn parse_hello_rejects_extra_fields() {
+        let media_run_id = Uuid::new_v4();
         let session_id = Uuid::new_v4();
-        let response = acknowledgement(session_id);
+        let message = format!("HELLO {media_run_id} {session_id} extra\n");
 
-        let result = validate_acknowledgement(&response, session_id);
-
-        assert!(result.is_ok());
+        assert!(parse_hello(&message).is_err());
     }
 
     #[test]
-    fn acknowledgement_rejects_different_session_id() {
+    fn acknowledgement_accepts_matching_identities() {
+        let media_run_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let response = acknowledgement(media_run_id, session_id);
+
+        assert!(validate_acknowledgement(&response, media_run_id, session_id).is_ok());
+    }
+
+    #[test]
+    fn acknowledgement_rejects_different_media_run() {
+        let expected_media_run = Uuid::new_v4();
+        let other_media_run = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let response = acknowledgement(other_media_run, session_id);
+
+        assert!(validate_acknowledgement(&response, expected_media_run, session_id).is_err());
+    }
+
+    #[test]
+    fn acknowledgement_rejects_different_session() {
+        let media_run_id = Uuid::new_v4();
         let expected_session = Uuid::new_v4();
         let other_session = Uuid::new_v4();
-        let response = acknowledgement(other_session);
+        let response = acknowledgement(media_run_id, other_session);
 
-        let result = validate_acknowledgement(&response, expected_session);
-
-        assert!(result.is_err());
+        assert!(validate_acknowledgement(&response, media_run_id, expected_session).is_err());
     }
 
     #[test]

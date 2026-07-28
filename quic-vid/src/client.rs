@@ -174,19 +174,25 @@ pub async fn run(
 
     // Initial QuicVid control handshake.
     let (mut send, mut recv) = connection.open_bi().await?;
-    let hello = control::hello(session_id);
+    let hello = control::hello(media_run.id(), session_id);
 
     send.write_all(hello.as_bytes()).await?;
     send.finish()?;
 
-    println!("event=hello_sent session={session_id}");
+    println!(
+        "event=hello_sent media_run={} session={session_id}",
+        media_run.id()
+    );
 
     let response = recv.read_to_end(1024).await?;
     let response = String::from_utf8(response)?;
 
-    control::validate_acknowledgement(&response, session_id)?;
+    control::validate_acknowledgement(&response, media_run.id(), session_id)?;
 
-    println!("event=hello_acknowledged session={session_id}");
+    println!(
+        "event=hello_acknowledged media_run={} session={session_id}",
+        media_run.id()
+    );
 
     let max_datagram_size = connection
         .max_datagram_size()
