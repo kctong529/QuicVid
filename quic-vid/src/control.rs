@@ -60,11 +60,18 @@ pub fn validate_acknowledgement(
     Ok(())
 }
 
-pub fn done(session_id: Uuid, frame_count: u64) -> String {
-    format!("DONE {session_id} {frame_count}\n")
+pub fn done(media_run_id: Uuid, session_id: Uuid, final_frame_exclusive: u64) -> String {
+    format!("DONE {media_run_id} {session_id} {final_frame_exclusive}\n")
 }
 
-pub fn parse_done(message: &str) -> anyhow::Result<(Uuid, u64)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Done {
+    pub media_run_id: Uuid,
+    pub session_id: Uuid,
+    pub final_frame_exclusive: u64,
+}
+
+pub fn parse_done(message: &str) -> anyhow::Result<Done> {
     let mut parts = message.split_whitespace();
 
     let message_type = parts
@@ -75,33 +82,37 @@ pub fn parse_done(message: &str) -> anyhow::Result<(Uuid, u64)> {
         anyhow::bail!("expected DONE control message, got {message_type:?}");
     }
 
+    let media_run_text = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing DONE media-run ID"))?;
     let session_text = parts
         .next()
         .ok_or_else(|| anyhow::anyhow!("missing DONE session ID"))?;
-
-    let frame_count_text = parts
+    let final_frame_text = parts
         .next()
-        .ok_or_else(|| anyhow::anyhow!("missing DONE frame count"))?;
+        .ok_or_else(|| anyhow::anyhow!("missing DONE final frame"))?;
 
     if parts.next().is_some() {
         anyhow::bail!("unexpected extra fields in DONE message");
     }
 
-    let session_id = Uuid::parse_str(session_text)?;
-    let frame_count = frame_count_text.parse::<u64>()?;
-
-    Ok((session_id, frame_count))
+    Ok(Done {
+        media_run_id: Uuid::parse_str(media_run_text)?,
+        session_id: Uuid::parse_str(session_text)?,
+        final_frame_exclusive: final_frame_text.parse::<u64>()?,
+    })
 }
 
-pub fn done_acknowledgement(session_id: Uuid) -> String {
-    format!("DONE_OK {session_id}\n")
+pub fn done_acknowledgement(media_run_id: Uuid, session_id: Uuid) -> String {
+    format!("DONE_OK {media_run_id} {session_id}\n")
 }
 
 pub fn validate_done_acknowledgement(
     message: &str,
+    expected_media_run_id: Uuid,
     expected_session_id: Uuid,
 ) -> anyhow::Result<()> {
-    let expected = format!("DONE_OK {expected_session_id}");
+    let expected = format!("DONE_OK {expected_media_run_id} {expected_session_id}");
 
     if message.trim() != expected {
         anyhow::bail!(
@@ -193,46 +204,70 @@ mod tests {
     }
 
     #[test]
-    fn done_round_trip_preserves_values() {
+    fn done_round_trip_preserves_media_run_session_and_timeline() {
+        let media_run_id = Uuid::new_v4();
         let session_id = Uuid::new_v4();
-        let message = done(session_id, 300);
+        let message = done(media_run_id, session_id, 300);
 
-        let (parsed_session, parsed_count) = parse_done(&message).unwrap();
+        let parsed = parse_done(&message).unwrap();
 
-        assert_eq!(parsed_session, session_id);
-        assert_eq!(parsed_count, 300);
+        assert_eq!(parsed.media_run_id, media_run_id);
+        assert_eq!(parsed.session_id, session_id);
+        assert_eq!(parsed.final_frame_exclusive, 300);
     }
 
     #[test]
-    fn parse_done_rejects_invalid_frame_count() {
+    fn parse_done_rejects_invalid_final_frame() {
+        let media_run_id = Uuid::new_v4();
         let session_id = Uuid::new_v4();
-        let message = format!("DONE {session_id} bananas\n");
+        let message = format!("DONE {media_run_id} {session_id} bananas\n");
+
+        assert!(parse_done(&message).is_err());
+    }
+
+    #[test]
+    fn parse_done_rejects_missing_identity() {
+        let media_run_id = Uuid::new_v4();
+        let message = format!("DONE {media_run_id} 10\n");
 
         assert!(parse_done(&message).is_err());
     }
 
     #[test]
     fn parse_done_rejects_extra_fields() {
+        let media_run_id = Uuid::new_v4();
         let session_id = Uuid::new_v4();
-        let message = format!("DONE {session_id} 10 extra\n");
+        let message = format!("DONE {media_run_id} {session_id} 10 extra\n");
 
         assert!(parse_done(&message).is_err());
     }
 
     #[test]
-    fn done_acknowledgement_accepts_matching_session() {
+    fn done_acknowledgement_accepts_matching_identities() {
+        let media_run_id = Uuid::new_v4();
         let session_id = Uuid::new_v4();
-        let response = done_acknowledgement(session_id);
+        let response = done_acknowledgement(media_run_id, session_id);
 
-        assert!(validate_done_acknowledgement(&response, session_id).is_ok());
+        assert!(validate_done_acknowledgement(&response, media_run_id, session_id).is_ok());
+    }
+
+    #[test]
+    fn done_acknowledgement_rejects_wrong_media_run() {
+        let expected_media_run = Uuid::new_v4();
+        let other_media_run = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let response = done_acknowledgement(other_media_run, session_id);
+
+        assert!(validate_done_acknowledgement(&response, expected_media_run, session_id).is_err());
     }
 
     #[test]
     fn done_acknowledgement_rejects_wrong_session() {
-        let expected = Uuid::new_v4();
-        let other = Uuid::new_v4();
-        let response = done_acknowledgement(other);
+        let media_run_id = Uuid::new_v4();
+        let expected_session = Uuid::new_v4();
+        let other_session = Uuid::new_v4();
+        let response = done_acknowledgement(media_run_id, other_session);
 
-        assert!(validate_done_acknowledgement(&response, expected).is_err());
+        assert!(validate_done_acknowledgement(&response, media_run_id, expected_session).is_err());
     }
 }

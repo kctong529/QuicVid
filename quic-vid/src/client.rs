@@ -556,28 +556,29 @@ pub async fn run(
 
     // Send the authoritative final frame count on a second control stream.
     let (mut done_send, mut done_recv) = connection.open_bi().await?;
-    let done = control::done(session_id, sent_frames);
+    let final_frame_exclusive = media_run.total_frames();
+    let done = control::done(media_run.id(), session_id, final_frame_exclusive);
 
     done_send.write_all(done.as_bytes()).await?;
     done_send.finish()?;
 
     println!(
-        "event=jpeg_video_done_sent media_run={} session={} frames={}",
+        "event=jpeg_video_done_sent media_run={} session={} final_frame_exclusive={}",
         media_run.id(),
         session_id,
-        sent_frames,
+        final_frame_exclusive,
     );
 
     let response = done_recv.read_to_end(1024).await?;
     let response = String::from_utf8(response)?;
 
-    control::validate_done_acknowledgement(&response, session_id)?;
+    control::validate_done_acknowledgement(&response, media_run.id(), session_id)?;
 
     println!(
-        "event=jpeg_video_done_acknowledged media_run={} session={} frames={}",
+        "event=jpeg_video_done_acknowledged media_run={} session={} final_frame_exclusive={}",
         media_run.id(),
         session_id,
-        sent_frames,
+        final_frame_exclusive,
     );
     connection.close(0u32.into(), b"JPEG video complete");
     endpoint.wait_idle().await;

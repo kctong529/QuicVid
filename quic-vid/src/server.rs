@@ -113,7 +113,7 @@ async fn handle_connection(
     let mut tracker = FrameTracker::default();
     let mut assembler = FrameAssembler::default();
 
-    let (expected_frames, mut done_send) = loop {
+    let (final_frame_exclusive, mut done_send) = loop {
         tokio::select! {
             datagram = connection.read_datagram() => {
                 match datagram {
@@ -141,33 +141,41 @@ async fn handle_connection(
                 let (send, mut recv) = control_stream?;
                 let request = recv.read_to_end(1024).await?;
                 let request = String::from_utf8(request)?;
-                let (done_session_id, expected_frames) =
-                    control::parse_done(&request)?;
+                let done = control::parse_done(&request)?;
 
-                if done_session_id != session_id {
+                if done.media_run_id != media_run_id {
+                    anyhow::bail!(
+                        "DONE media-run mismatch: expected {}, got {}",
+                        media_run_id,
+                        done.media_run_id
+                    );
+                }
+
+                if done.session_id != session_id {
                     anyhow::bail!(
                         "DONE session mismatch: expected {}, got {}",
                         session_id,
-                        done_session_id
+                        done.session_id
                     );
                 }
 
                 println!(
-                    "event=jpeg_video_done session={} expected_frames={}",
+                    "event=jpeg_video_done media_run={} session={} final_frame_exclusive={}",
+                    media_run_id,
                     session_id,
-                    expected_frames,
+                    done.final_frame_exclusive,
                 );
 
-                break (expected_frames, send);
+                break (done.final_frame_exclusive, send);
             }
         }
     };
 
-    if !tracker.has_received_all_expected(expected_frames) {
+    if !tracker.has_received_all_expected(final_frame_exclusive) {
         let drain_deadline = tokio::time::Instant::now() + POST_DONE_DRAIN;
 
         loop {
-            if tracker.has_received_all_expected(expected_frames) {
+            if tracker.has_received_all_expected(final_frame_exclusive) {
                 break;
             }
 
@@ -200,12 +208,12 @@ async fn handle_connection(
     println!("event=jpeg_video_drain_complete session={session_id}");
 
     let summary = tracker.summary();
-    let missing = tracker.missing_from_expected(expected_frames);
+    let missing = tracker.missing_from_expected(final_frame_exclusive);
 
     println!(
         "event=jpeg_video_receive_summary session={} expected={} received={} unique={} missing={} out_of_order={} duplicates={} largest_gap_ms={} incomplete_frames={}",
         session_id,
-        expected_frames,
+        final_frame_exclusive,
         summary.received,
         summary.unique,
         missing,
@@ -215,11 +223,14 @@ async fn handle_connection(
         assembler.incomplete_frame_count(),
     );
 
-    let response = control::done_acknowledgement(session_id);
+    let response = control::done_acknowledgement(media_run_id, session_id);
     done_send.write_all(response.as_bytes()).await?;
     done_send.finish()?;
 
-    println!("event=jpeg_video_done_acknowledged session={session_id}");
+    println!(
+        "event=jpeg_video_done_acknowledged media_run={} session={} final_frame_exclusive={}",
+        media_run_id, session_id, final_frame_exclusive
+    );
 
     let close_reason = connection.closed().await;
 
