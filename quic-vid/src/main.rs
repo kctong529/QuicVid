@@ -3,6 +3,7 @@ mod control;
 mod frame_assembler;
 mod frame_tracker;
 mod media;
+mod media_run;
 mod migration;
 mod path_discovery;
 mod path_health;

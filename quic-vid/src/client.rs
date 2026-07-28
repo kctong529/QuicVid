@@ -1,4 +1,5 @@
 use crate::media::{fragment_frame, MEDIA_HEADER_SIZE};
+use crate::media_run::MediaRun;
 use crate::migration::{MigrationContext, MigrationController, MigrationReason, MigrationState};
 use crate::path_discovery;
 use crate::path_health::{PathHealthEvent, PathHealthMonitor};
@@ -131,13 +132,20 @@ pub async fn run(
         anyhow::bail!("JPEG quality must be between 1 and 100");
     }
 
-    let total_frames = u64::from(fps)
-        .checked_mul(duration_seconds)
-        .ok_or_else(|| anyhow::anyhow!("fake-video frame count overflow"))?;
+    let media_run = MediaRun::new(fps, Duration::from_secs(duration_seconds))?;
+    let total_frames = media_run.total_frames();
 
     println!(
-        "event=jpeg_video_config fps={} duration_seconds={} jpeg_quality={} expected_frames={}",
-        fps, duration_seconds, jpeg_quality, total_frames,
+        "event=media_run_created media_run={} fps={} duration_seconds={} expected_frames={}",
+        media_run.id(),
+        media_run.fps(),
+        media_run.duration().as_secs(),
+        total_frames,
+    );
+
+    println!(
+        "event=jpeg_video_config media_run={} fps={} duration_seconds={} jpeg_quality={} expected_frames={}",
+        media_run.id(), fps, duration_seconds, jpeg_quality, total_frames,
     );
 
     let mut endpoint = quinn::Endpoint::client(bind)?;
@@ -199,8 +207,6 @@ pub async fn run(
         session_id, max_datagram_size, max_payload_size,
     );
 
-    let frame_interval = 1.0 / f64::from(fps);
-    let video_started = tokio::time::Instant::now();
     let health_started = Instant::now();
 
     let initial_ack_count = connection.stats().frame_rx.acks;
@@ -234,7 +240,9 @@ pub async fn run(
     );
 
     loop {
-        let elapsed = video_started.elapsed().as_secs_f64();
+        let now = Instant::now();
+        let media_elapsed = media_run.elapsed(now);
+        let elapsed = media_elapsed.as_secs_f64();
 
         if let Some(monitor) = path_health.as_mut() {
             let now = Instant::now();
@@ -290,7 +298,7 @@ pub async fn run(
                     let action = handle_path_health_event(
                         event,
                         &mut migration,
-                        video_started.elapsed(),
+                        media_elapsed,
                         active_local,
                         connection.stable_id(),
                     )?;
@@ -304,7 +312,7 @@ pub async fn run(
                              active_local={} \
                              ack_count={} \
                              connection={}",
-                            video_started.elapsed().as_secs_f64(),
+                            media_run.elapsed(Instant::now()).as_secs_f64(),
                             endpoint.local_addr()?,
                             ack_count,
                             connection.stable_id(),
@@ -338,7 +346,7 @@ pub async fn run(
                                      requested_local={} \
                                      interface={} \
                                      connection={}",
-                                    video_started.elapsed().as_secs_f64(),
+                                    media_run.elapsed(Instant::now()).as_secs_f64(),
                                     old_local,
                                     requested_local,
                                     candidate.interface_name,
@@ -357,7 +365,7 @@ pub async fn run(
                                              interface={} \
                                              connection={} \
                                              error={}",
-                                            video_started.elapsed().as_secs_f64(),
+                                            media_run.elapsed(Instant::now()).as_secs_f64(),
                                             old_local,
                                             requested_local,
                                             candidate.interface_name,
@@ -373,7 +381,7 @@ pub async fn run(
                                     MigrationState::Migrating,
                                     MigrationReason::AlternatePathReady,
                                     MigrationContext {
-                                        elapsed: video_started.elapsed(),
+                                        elapsed: media_run.elapsed(Instant::now()),
                                         active_local: old_local,
                                         candidate_local: Some(new_local),
                                         connection_id: connection.stable_id(),
@@ -387,7 +395,7 @@ pub async fn run(
                                      old_local={} \
                                      new_local={} \
                                      connection={}",
-                                    video_started.elapsed().as_secs_f64(),
+                                    media_run.elapsed(Instant::now()).as_secs_f64(),
                                     old_local,
                                     new_local,
                                     connection.stable_id(),
@@ -411,7 +419,7 @@ pub async fn run(
             if let (Some(rebind_addr), Some(rebind_after)) = (rebind, rebind_after_seconds) {
                 if elapsed >= rebind_after {
                     let old_addr = endpoint.local_addr()?;
-                    let elapsed_duration = video_started.elapsed();
+                    let elapsed_duration = media_elapsed;
 
                     println!(
                         "event=migration_requested \
@@ -464,7 +472,7 @@ pub async fn run(
                         MigrationState::Healthy,
                         MigrationReason::MigrationCompleted,
                         MigrationContext {
-                            elapsed: video_started.elapsed(),
+                            elapsed: media_run.elapsed(Instant::now()),
                             active_local: new_addr,
                             candidate_local: None,
                             connection_id: connection.stable_id(),
@@ -476,9 +484,9 @@ pub async fn run(
             }
         }
 
-        let frame_id = (elapsed / frame_interval).floor() as u64;
+        let frame_id = media_run.current_frame_id(now);
 
-        if frame_id >= total_frames {
+        if media_run.is_complete(now) || frame_id >= total_frames {
             break;
         }
 
@@ -497,7 +505,8 @@ pub async fn run(
 
         if log_frames {
             println!(
-                "event=jpeg_frame_encoded session={} frame={} jpeg_bytes={} chunks={}",
+                "event=jpeg_frame_encoded media_run={} session={} frame={} jpeg_bytes={} chunks={}",
+                media_run.id(),
                 session_id,
                 frame_id,
                 jpeg.len(),
@@ -514,7 +523,8 @@ pub async fn run(
 
             if log_datagrams {
                 println!(
-                    "event=media_chunk_submitted session={} frame={} chunk={}/{} payload_bytes={}",
+                    "event=media_chunk_submitted media_run={} session={} frame={} chunk={}/{} payload_bytes={}",
+                    media_run.id(),
                     session_id,
                     media.frame_id,
                     media.chunk_index,
@@ -528,7 +538,8 @@ pub async fn run(
     }
 
     println!(
-        "event=jpeg_video_send_summary session={} frames={} datagrams={} fps={} duration_seconds={} jpeg_quality={}",
+        "event=jpeg_video_send_summary media_run={} session={} frames={} datagrams={} fps={} duration_seconds={} jpeg_quality={}",
+        media_run.id(),
         session_id,
         sent_frames,
         sent_datagrams,
@@ -545,8 +556,10 @@ pub async fn run(
     done_send.finish()?;
 
     println!(
-        "event=jpeg_video_done_sent session={} frames={}",
-        session_id, sent_frames,
+        "event=jpeg_video_done_sent media_run={} session={} frames={}",
+        media_run.id(),
+        session_id,
+        sent_frames,
     );
 
     let response = done_recv.read_to_end(1024).await?;
@@ -555,13 +568,24 @@ pub async fn run(
     control::validate_done_acknowledgement(&response, session_id)?;
 
     println!(
-        "event=jpeg_video_done_acknowledged session={} frames={}",
-        session_id, sent_frames,
+        "event=jpeg_video_done_acknowledged media_run={} session={} frames={}",
+        media_run.id(),
+        session_id,
+        sent_frames,
     );
     connection.close(0u32.into(), b"JPEG video complete");
     endpoint.wait_idle().await;
 
-    println!("event=client_stopped session={session_id}");
+    println!(
+        "event=media_run_completed media_run={} final_frame_exclusive={} sessions=1",
+        media_run.id(),
+        total_frames,
+    );
+    println!(
+        "event=client_stopped media_run={} session={}",
+        media_run.id(),
+        session_id
+    );
 
     Ok(())
 }
