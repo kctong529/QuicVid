@@ -18,10 +18,10 @@ Controlled migration presets initially send media through Path A, then explicitl
 rebind the active Quinn endpoint to Path B. The same QUIC connection and logical
 QuicVid session continue after the path change.
 
-Automatic path-health presets instead keep the client on Path A, introduce a
-reproducible Path A impairment, and verify that loss of QUIC ACK progress drives
-the migration controller into `Suspect` and, when degradation persists,
-`Challenging`. These presets do not yet discover or migrate to Path B.
+Automatic path-health presets keep the client on Path A and introduce a
+reproducible impairment. A transient outage verifies recovery on the original
+path, while sustained degradation drives automatic discovery, selection, and
+migration to Path B.
 
 ## Topology
 
@@ -186,7 +186,7 @@ Initial path:        10.0.1.2 / Path A
 Automatic health:    enabled
 Suspect after:       250 ms
 Challenge after:     1000 ms
-Path A impairment:   starts at 1.0 s
+Path A impairment:   starts at 2.0 s
 Impairment duration: 350 ms
 Preview:             disabled
 ```
@@ -230,16 +230,17 @@ restored. This trade-off is evaluated quantitatively later.
 sudo python3 scripts/mininet/migration_demo.py --preset health-sustained
 ```
 
-This preset exercises escalation under persistent degradation:
+This preset exercises the complete automatic migration path after persistent
+degradation:
 
 ```text
 FPS:                 10
-Duration:            4 s
+Duration:            6 s
 Initial path:        10.0.1.2 / Path A
-Automatic health:    enabled
+Automatic migration: enabled
 Suspect after:       250 ms
 Challenge after:     500 ms
-Path A impairment:   starts at 1.0 s
+Path A impairment:   starts at 2.0 s
 Impairment duration: sustained
 Preview:             disabled
 ```
@@ -257,6 +258,14 @@ Suspect
   | degradation persists
   v
 Challenging
+  |
+  | discover and select 10.0.2.2
+  v
+Migrating
+  |
+  | ACK progress resumes after endpoint rebind
+  v
+Healthy
 ```
 
 A successful run should emit:
@@ -264,18 +273,51 @@ A successful run should emit:
 ```text
 event=path_health status=suspect ...
 event=path_health status=challenge_requested ...
-event=path_challenge_requested ...
+event=path_discovery_started ...
+event=path_candidate_found interface=client-eth1 candidate_ip=10.0.2.2
+event=path_candidate_selected interface=client-eth1 candidate_ip=10.0.2.2
+event=automatic_rebind_started ...
+event=migration_state ... from=Challenging to=Migrating ...
+event=endpoint_rebound mode=automatic ...
+event=path_health status=recovered ...
+event=migration_state ... from=Migrating to=Healthy ...
+event=migration_confirmed ...
 ```
 
-and matching migration-state transitions:
+Automatic mode does not receive a fallback `--rebind` address. QuicVid
+enumerates local IPv4 addresses, excludes unsuitable and active addresses,
+selects the first remaining candidate in deterministic order, and binds a new
+UDP socket for `Endpoint::rebind()`.
+
+A successful rebind call is not treated as proof of recovery. The controller
+remains in `Migrating` until new QUIC ACK progress is observed.
+
+## Automatic migration behavior
+
+In the sustained scenario, packet captures should show:
 
 ```text
-Healthy -> Suspect -> Challenging
+before impairment:
+10.0.1.2 -> Path A through r1
+
+after automatic rebind:
+10.0.2.2 -> Path B through r2
 ```
 
-The client intentionally stops at `Challenging`. No alternative local address
-is provided in advance, and no automatic endpoint rebind is performed in these
-Milestone 4 path-health presets.
+The remote server address remains `10.0.0.1:4433`. Only the client's local UDP
+path changes.
+
+The automatic migration preserves:
+
+* the same Quinn connection identity;
+* the same QuicVid session UUID;
+* the existing media and control session;
+* a single initial `HELLO`.
+
+No reconnect or second application handshake occurs. Normal completion should
+still reach `DONE`, `DONE_OK`, `jpeg_video_done_acknowledged`, and
+`client_stopped`.
+
 
 ## Path-health signal
 
@@ -370,8 +412,9 @@ quic-vid client \
 ```
 
 Automatic mode deliberately does not receive a `--rebind` target. Reaching
-`Challenging` means that an alternative path should now be discovered and tested;
-that work belongs to the next epic.
+`Challenging` triggers local IPv4 candidate discovery and selection. The client
+then rebinds the existing Quinn endpoint to the selected address and waits for
+new ACK progress before returning to `Healthy`.
 
 This allows the server and packet capture windows to be ready before media
 transmission begins.
@@ -465,18 +508,46 @@ across the migration without an obvious session restart or prolonged freeze.
 The preview demo is intended as a qualitative continuity demonstration.
 Quantitative disruption and frame-loss measurements are evaluated separately.
 
-For the automatic path-health presets, verify the controller behavior separately:
+For the automatic presets, verify the controller behavior separately:
 
 ```text
 health-transient:
 Healthy -> Suspect -> Healthy
 
 health-sustained:
-Healthy -> Suspect -> Challenging
+Healthy -> Suspect -> Challenging -> Migrating -> Healthy
 ```
 
-The health presets are for detection and state-machine verification only. They do
-not yet migrate to Path B.
+The transient preset recovers on Path A without discovery or rebind. The
+sustained preset discovers `client-eth1 / 10.0.2.2`, rebinds the existing Quinn
+endpoint, moves traffic to Path B, and confirms recovery from resumed ACK
+progress.
+
+## Preset logging modes
+
+The launcher applies logging defaults suited to each scenario:
+
+| Preset | Per-frame logs | Per-datagram logs | Intended use |
+|---|---:|---:|---|
+| `diagnostic` | shown | shown | Full low-rate diagnostic output |
+| `preview` | shown | suppressed | Preview with reduced chunk-level noise |
+| `health-transient` | suppressed | suppressed | Focus on path-health recovery |
+| `health-sustained` | suppressed | suppressed | Focus on automatic migration |
+
+These are preset defaults rather than fixed modes. They can be overridden with
+the launcher options listed below. For example, this keeps per-frame output while
+suppressing per-datagram output:
+
+```bash
+sudo python3 scripts/mininet/migration_demo.py \
+  --preset health-sustained \
+  --no-quiet-media-logs \
+  --quiet-datagram-logs
+```
+
+Migration, path-health, discovery, connection, and final summary events remain
+visible when media logs are suppressed.
+
 
 ## Custom configuration
 
@@ -507,6 +578,10 @@ Available overrides include:
 --challenge-after-ms
 --impair-after-seconds
 --impair-duration-seconds
+--quiet-media-logs
+--no-quiet-media-logs
+--quiet-datagram-logs
+--no-quiet-datagram-logs
 ```
 
 For example, preview can be disabled while retaining the other preview preset
@@ -614,34 +689,41 @@ If Mininet state remains after an interrupted run, clean it with:
 sudo mn -c
 ```
 
-## Scope
+## Scope and current limitations
 
-This setup now supports two related kinds of reproducible Mininet experiments:
+This setup now supports three reproducible Mininet experiments:
 
 * controlled client-side QUIC connection migration from Path A to Path B;
-* automatic detection of Path A degradation using QUIC ACK progress.
+* transient path degradation followed by recovery on Path A;
+* sustained Path A failure followed by automatic discovery and migration to
+  Path B.
 
-The automatic path-health work currently ends at:
+The automatic migration path is:
 
 ```text
-Healthy -> Suspect -> Challenging
+Healthy -> Suspect -> Challenging -> Migrating -> Healthy
 ```
 
-It intentionally does not yet implement:
+Current limitations are:
 
-* discovery of alternative local interfaces or addresses;
-* selection or ranking of candidate paths;
-* QUIC validation of a newly discovered candidate path;
-* automatic endpoint rebind after entering `Challenging`;
-* final Path B migration policy;
-* Wi-Fi or NetworkManager-triggered migration;
-* physical wireless handover;
-* repeated statistical evaluation or threshold sweeps;
-* reconnect or TCP baselines.
+* automatic discovery supports IPv4 addresses only;
+* candidates are filtered and ordered deterministically but are not ranked by
+  reachability, interface type, RTT, bandwidth, or cost;
+* the first remaining candidate is selected;
+* no application-layer QUIC `PATH_CHALLENGE` or `PATH_RESPONSE` implementation
+  is used;
+* Quinn handles transport-level migration and path validation internally;
+* if no candidate is found, the controller remains in `Challenging`;
+* there is no candidate-discovery retry policy;
+* a rebind failure is logged and terminates the client;
+* there is no dedicated migration-confirmation timeout, so Quinn's connection
+  timeout remains the final failure mechanism;
+* the automatic scenario is currently validated in the controlled Mininet
+  topology;
+* Wi-Fi or NetworkManager-triggered migration, physical wireless handover,
+  repeated statistical evaluation, threshold sweeps, reconnect baselines, and
+  TCP baselines remain outside this setup.
 
-Alternative-path discovery, validation, and automatic migration are handled by
-the next epic. Statistical threshold and disruption evaluation is handled later.
-
-The purpose of this setup is to provide a deterministic environment for both the
-known controlled migration case and the automatic detection logic that decides
-when an alternative path should be challenged.
+The purpose of this setup is to provide a deterministic environment for
+controlled migration, automatic degradation detection, alternative-address
+discovery, and recovery confirmation before quantitative evaluation.
