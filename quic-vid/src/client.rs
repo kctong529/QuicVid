@@ -73,6 +73,7 @@ fn discover_alternative_path(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     connect: SocketAddr,
     bind: SocketAddr,
@@ -344,7 +345,29 @@ pub async fn run(
                                     connection.stable_id(),
                                 );
 
-                                let new_local = rebind_endpoint(&endpoint, requested_local)?;
+                                let new_local = match rebind_endpoint(&endpoint, requested_local) {
+                                    Ok(new_local) => new_local,
+
+                                    Err(error) => {
+                                        println!(
+                                            "event=automatic_rebind_failed \
+                                             elapsed_seconds={:.3} \
+                                             old_local={} \
+                                             requested_local={} \
+                                             interface={} \
+                                             connection={} \
+                                             error={}",
+                                            video_started.elapsed().as_secs_f64(),
+                                            old_local,
+                                            requested_local,
+                                            candidate.interface_name,
+                                            connection.stable_id(),
+                                            error,
+                                        );
+
+                                        return Err(error);
+                                    }
+                                };
 
                                 migration.transition(
                                     MigrationState::Migrating,
@@ -373,7 +396,9 @@ pub async fn run(
                                 automatic_migration_pending = true;
                             }
 
-                            AlternativeDiscoveryResult::NoAlternative => {}
+                            AlternativeDiscoveryResult::NoAlternative => {
+                                // Remain in Challenging. Retry policy is outside the current prototype scope.
+                            }
                         }
                     }
                 }
@@ -889,6 +914,41 @@ mod tests {
             &mut migration,
             Duration::from_millis(800),
             test_local_address(),
+            TEST_CONNECTION_ID,
+        )
+        .unwrap();
+
+        assert_eq!(action, PathHealthAction::None);
+        assert_eq!(migration.state(), MigrationState::Healthy);
+    }
+
+    #[test]
+    fn recovery_after_automatic_rebind_completes_migration() {
+        let mut migration = MigrationController::new();
+
+        move_to_challenging(&mut migration);
+
+        let old_local: SocketAddr = "10.0.1.2:5000".parse().unwrap();
+        let new_local: SocketAddr = "10.0.2.2:6000".parse().unwrap();
+
+        migration
+            .transition(
+                MigrationState::Migrating,
+                MigrationReason::AlternatePathReady,
+                MigrationContext {
+                    elapsed: Duration::from_millis(800),
+                    active_local: old_local,
+                    candidate_local: Some(new_local),
+                    connection_id: TEST_CONNECTION_ID,
+                },
+            )
+            .unwrap();
+
+        let action = handle_path_health_event(
+            PathHealthEvent::Recovered,
+            &mut migration,
+            Duration::from_millis(900),
+            new_local,
             TEST_CONNECTION_ID,
         )
         .unwrap();
