@@ -22,6 +22,8 @@ PRESETS = {
         "challenge_after_ms": 250,
         "impair_after_seconds": None,
         "impair_duration_seconds": None,
+        "quiet_media_logs": False,
+        "quiet_datagram_logs": False,
     },
     "preview": {
         "fps": 30,
@@ -34,6 +36,8 @@ PRESETS = {
         "challenge_after_ms": 250,
         "impair_after_seconds": None,
         "impair_duration_seconds": None,
+        "quiet_media_logs": False,
+        "quiet_datagram_logs": True,
     },
     "health-transient": {
         "fps": 10,
@@ -46,6 +50,8 @@ PRESETS = {
         "challenge_after_ms": 1000,
         "impair_after_seconds": 2.0,
         "impair_duration_seconds": 0.35,
+        "quiet_media_logs": True,
+        "quiet_datagram_logs": False,
     },
     "health-sustained": {
         "fps": 10,
@@ -58,6 +64,8 @@ PRESETS = {
         "challenge_after_ms": 500,
         "impair_after_seconds": 2.0,
         "impair_duration_seconds": None,
+        "quiet_media_logs": True,
+        "quiet_datagram_logs": False,
     },
 }
 
@@ -133,12 +141,28 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override Path A impairment duration; omit for sustained impairment",
     )
+    parser.add_argument(
+        "--quiet-media-logs",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Suppress per-frame and per-datagram client logs.",
+    )
+
+    parser.add_argument(
+        "--quiet-datagram-logs",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Suppress per-datagram client logs while retaining per-frame logs.",
+    )
 
     return parser.parse_args()
 
 
 def apply_preset(args: argparse.Namespace) -> argparse.Namespace:
     preset = PRESETS[args.preset]
+
+    quiet_media_override = args.quiet_media_logs
+    quiet_datagram_override = args.quiet_datagram_logs
 
     for key in (
         "fps",
@@ -151,9 +175,19 @@ def apply_preset(args: argparse.Namespace) -> argparse.Namespace:
         "challenge_after_ms",
         "impair_after_seconds",
         "impair_duration_seconds",
+        "quiet_media_logs",
+        "quiet_datagram_logs",
     ):
         if getattr(args, key) is None:
             setattr(args, key, preset[key])
+
+    # An explicit datagram-only request should override a preset that suppresses
+    # all media logs. When both quiet flags are explicitly enabled, the broader
+    # media-log suppression mode takes precedence.
+    if quiet_datagram_override is True and quiet_media_override is None:
+        args.quiet_media_logs = False
+    elif quiet_media_override is True:
+        args.quiet_datagram_logs = False
 
     return args
 
@@ -253,6 +287,11 @@ def client_command(args: argparse.Namespace) -> str:
             ]
         )
 
+    if args.quiet_media_logs:
+        parts.append("--quiet-media-logs")
+    elif args.quiet_datagram_logs:
+        parts.append("--quiet-datagram-logs")
+
     return shlex.join(parts)
 
 
@@ -297,6 +336,14 @@ def print_configuration(args: argparse.Namespace) -> None:
     info(f"*** FPS:                 {args.fps}\n")
     info(f"*** Duration:            {args.duration_seconds} s\n")
     info(f"*** Preview:             {'yes' if args.preview else 'no'}\n")
+    info(
+        "*** Media logs:          "
+        f"{'suppressed' if args.quiet_media_logs else 'enabled'}\n"
+    )
+    info(
+        "*** Datagram logs:       "
+        f"{'suppressed' if args.quiet_media_logs or args.quiet_datagram_logs else 'enabled'}\n"
+    )
 
     if args.auto_migrate:
         info("*** Mode:                automatic path health\n")
