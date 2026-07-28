@@ -1,5 +1,6 @@
 use crate::media::{fragment_frame, MEDIA_HEADER_SIZE};
 use crate::migration::{MigrationContext, MigrationController, MigrationReason, MigrationState};
+use crate::path_discovery;
 use crate::path_health::{PathHealthEvent, PathHealthMonitor};
 use crate::{control, test_pattern, tls};
 use std::net::{SocketAddr, UdpSocket};
@@ -7,6 +8,70 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const PATH_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AlternativeDiscoveryResult {
+    Selected(path_discovery::PathCandidate),
+    NoAlternative,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathHealthAction {
+    None,
+    DiscoverAlternative,
+}
+
+fn discover_alternative_path(
+    active_local: SocketAddr,
+) -> anyhow::Result<AlternativeDiscoveryResult> {
+    let active_ip = match active_local.ip() {
+        std::net::IpAddr::V4(ip) => ip,
+        std::net::IpAddr::V6(_) => {
+            anyhow::bail!("automatic path discovery currently supports IPv4 only");
+        }
+    };
+
+    println!(
+        "event=path_discovery_started \
+         active_local={}",
+        active_local
+    );
+
+    let candidates = path_discovery::discover_ipv4_candidates(active_ip)?;
+
+    for candidate in &candidates {
+        println!(
+            "event=path_candidate_found \
+             interface={} \
+             candidate_ip={}",
+            candidate.interface_name, candidate.local_ip,
+        );
+    }
+
+    match path_discovery::select_candidate(&candidates) {
+        Some(candidate) => {
+            println!(
+                "event=path_candidate_selected \
+                 interface={} \
+                 candidate_ip={}",
+                candidate.interface_name, candidate.local_ip,
+            );
+
+            Ok(AlternativeDiscoveryResult::Selected(candidate.clone()))
+        }
+
+        None => {
+            println!(
+                "event=path_discovery_failed \
+                 reason=no_alternative \
+                 active_local={}",
+                active_local
+            );
+
+            Ok(AlternativeDiscoveryResult::NoAlternative)
+        }
+    }
+}
 
 pub async fn run(
     connect: SocketAddr,
@@ -212,13 +277,33 @@ pub async fn run(
                 }
 
                 if event != PathHealthEvent::None {
-                    handle_path_health_event(
+                    let active_local = endpoint.local_addr()?;
+
+                    let action = handle_path_health_event(
                         event,
                         &mut migration,
                         video_started.elapsed(),
-                        endpoint.local_addr()?,
+                        active_local,
                         connection.stable_id(),
                     )?;
+
+                    if action == PathHealthAction::DiscoverAlternative {
+                        match discover_alternative_path(active_local)? {
+                            AlternativeDiscoveryResult::Selected(candidate) => {
+                                println!(
+                                    "event=automatic_migration_candidate_ready \
+                                     interface={} \
+                                     candidate_local={}:0 \
+                                     connection={}",
+                                    candidate.interface_name,
+                                    candidate.local_ip,
+                                    connection.stable_id(),
+                                );
+                            }
+
+                            AlternativeDiscoveryResult::NoAlternative => {}
+                        }
+                    }
                 }
 
                 next_health_check = now + PATH_HEALTH_POLL_INTERVAL;
@@ -386,7 +471,7 @@ fn handle_path_health_event(
     elapsed: Duration,
     active_local: SocketAddr,
     connection_id: usize,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<PathHealthAction> {
     let context = MigrationContext {
         elapsed,
         active_local,
@@ -395,7 +480,7 @@ fn handle_path_health_event(
     };
 
     match event {
-        PathHealthEvent::None => {}
+        PathHealthEvent::None => Ok(PathHealthAction::None),
 
         PathHealthEvent::BecameSuspect => {
             migration.transition(
@@ -403,6 +488,8 @@ fn handle_path_health_event(
                 MigrationReason::AckProgressTimeout,
                 context,
             )?;
+
+            Ok(PathHealthAction::None)
         }
 
         PathHealthEvent::Recovered => {
@@ -411,6 +498,8 @@ fn handle_path_health_event(
                 MigrationReason::AckProgressRecovered,
                 context,
             )?;
+
+            Ok(PathHealthAction::None)
         }
 
         PathHealthEvent::ChallengeRequested => {
@@ -430,10 +519,10 @@ fn handle_path_health_event(
                 active_local,
                 connection_id,
             );
+
+            Ok(PathHealthAction::DiscoverAlternative)
         }
     }
-
-    Ok(())
 }
 
 fn rebind_endpoint(endpoint: &quinn::Endpoint, bind: SocketAddr) -> anyhow::Result<SocketAddr> {
@@ -488,6 +577,38 @@ fn validate_migration_config(
 mod tests {
     use super::*;
 
+    const TEST_CONNECTION_ID: usize = 42;
+    const SUSPECT_AFTER_MS: u64 = 250;
+    const CHALLENGE_AFTER_MS: u64 = 250;
+
+    fn test_local_address() -> SocketAddr {
+        "10.0.1.2:5000".parse().unwrap()
+    }
+
+    fn move_to_suspect(migration: &mut MigrationController) -> PathHealthAction {
+        handle_path_health_event(
+            PathHealthEvent::BecameSuspect,
+            migration,
+            Duration::from_millis(250),
+            test_local_address(),
+            TEST_CONNECTION_ID,
+        )
+        .unwrap()
+    }
+
+    fn move_to_challenging(migration: &mut MigrationController) -> PathHealthAction {
+        move_to_suspect(migration);
+
+        handle_path_health_event(
+            PathHealthEvent::ChallengeRequested,
+            migration,
+            Duration::from_millis(750),
+            test_local_address(),
+            TEST_CONNECTION_ID,
+        )
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn rebind_endpoint_updates_endpoint_local_address() {
         let endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
@@ -507,8 +628,8 @@ mod tests {
             Some("127.0.0.1:5000".parse().unwrap()),
             None,
             false,
-            250,
-            250,
+            SUSPECT_AFTER_MS,
+            CHALLENGE_AFTER_MS,
         );
 
         assert!(result.is_err());
@@ -516,21 +637,22 @@ mod tests {
 
     #[test]
     fn rebind_time_requires_rebind_address() {
-        let result = validate_migration_config(None, Some(1.0), false, 250, 250);
+        let result =
+            validate_migration_config(None, Some(1.0), false, SUSPECT_AFTER_MS, CHALLENGE_AFTER_MS);
 
         assert!(result.is_err());
     }
 
     #[test]
     fn automatic_migration_rejects_zero_suspect_threshold() {
-        let result = validate_migration_config(None, None, true, 0, 250);
+        let result = validate_migration_config(None, None, true, 0, CHALLENGE_AFTER_MS);
 
         assert!(result.is_err());
     }
 
     #[test]
     fn automatic_migration_rejects_zero_challenge_threshold() {
-        let result = validate_migration_config(None, None, true, 250, 0);
+        let result = validate_migration_config(None, None, true, SUSPECT_AFTER_MS, 0);
 
         assert!(result.is_err());
     }
@@ -541,8 +663,8 @@ mod tests {
             Some("127.0.0.1:5000".parse().unwrap()),
             Some(1.0),
             true,
-            250,
-            250,
+            SUSPECT_AFTER_MS,
+            CHALLENGE_AFTER_MS,
         );
 
         assert!(result.is_err());
@@ -550,7 +672,8 @@ mod tests {
 
     #[test]
     fn automatic_migration_without_fallback_address_is_valid() {
-        let result = validate_migration_config(None, None, true, 250, 250);
+        let result =
+            validate_migration_config(None, None, true, SUSPECT_AFTER_MS, CHALLENGE_AFTER_MS);
 
         assert!(result.is_ok());
     }
@@ -561,113 +684,85 @@ mod tests {
             Some("127.0.0.1:5000".parse().unwrap()),
             Some(1.0),
             false,
-            250,
-            250,
+            SUSPECT_AFTER_MS,
+            CHALLENGE_AFTER_MS,
         );
 
         assert!(result.is_ok());
     }
 
     #[test]
-    fn path_health_suspect_event_moves_controller_to_suspect() {
+    fn no_path_health_event_produces_no_action() {
         let mut migration = MigrationController::new();
 
-        handle_path_health_event(
-            PathHealthEvent::BecameSuspect,
+        let action = handle_path_health_event(
+            PathHealthEvent::None,
             &mut migration,
-            Duration::from_millis(250),
-            "10.0.1.2:5000".parse().unwrap(),
-            42,
+            Duration::ZERO,
+            test_local_address(),
+            TEST_CONNECTION_ID,
         )
         .unwrap();
 
-        assert_eq!(migration.state(), MigrationState::Suspect);
-    }
-
-    #[test]
-    fn path_health_recovery_returns_controller_to_healthy() {
-        let mut migration = MigrationController::new();
-        let active_local = "10.0.1.2:5000".parse().unwrap();
-
-        handle_path_health_event(
-            PathHealthEvent::BecameSuspect,
-            &mut migration,
-            Duration::from_millis(250),
-            active_local,
-            42,
-        )
-        .unwrap();
-
-        handle_path_health_event(
-            PathHealthEvent::Recovered,
-            &mut migration,
-            Duration::from_millis(350),
-            active_local,
-            42,
-        )
-        .unwrap();
-
+        assert_eq!(action, PathHealthAction::None);
         assert_eq!(migration.state(), MigrationState::Healthy);
     }
 
     #[test]
-    fn persistent_path_degradation_moves_controller_to_challenging() {
+    fn suspect_event_moves_controller_to_suspect_without_discovery() {
         let mut migration = MigrationController::new();
-        let active_local = "10.0.1.2:5000".parse().unwrap();
 
-        handle_path_health_event(
-            PathHealthEvent::BecameSuspect,
+        let action = move_to_suspect(&mut migration);
+
+        assert_eq!(action, PathHealthAction::None);
+        assert_eq!(migration.state(), MigrationState::Suspect);
+    }
+
+    #[test]
+    fn recovery_from_suspect_returns_controller_to_healthy() {
+        let mut migration = MigrationController::new();
+
+        move_to_suspect(&mut migration);
+
+        let action = handle_path_health_event(
+            PathHealthEvent::Recovered,
             &mut migration,
-            Duration::from_millis(250),
-            active_local,
-            42,
+            Duration::from_millis(350),
+            test_local_address(),
+            TEST_CONNECTION_ID,
         )
         .unwrap();
 
-        handle_path_health_event(
-            PathHealthEvent::ChallengeRequested,
-            &mut migration,
-            Duration::from_millis(750),
-            active_local,
-            42,
-        )
-        .unwrap();
+        assert_eq!(action, PathHealthAction::None);
+        assert_eq!(migration.state(), MigrationState::Healthy);
+    }
 
+    #[test]
+    fn persistent_degradation_requests_alternative_discovery() {
+        let mut migration = MigrationController::new();
+
+        let action = move_to_challenging(&mut migration);
+
+        assert_eq!(action, PathHealthAction::DiscoverAlternative);
         assert_eq!(migration.state(), MigrationState::Challenging);
     }
 
     #[test]
     fn recovery_while_challenging_returns_controller_to_healthy() {
         let mut migration = MigrationController::new();
-        let active_local = "10.0.1.2:5000".parse().unwrap();
 
-        handle_path_health_event(
-            PathHealthEvent::BecameSuspect,
-            &mut migration,
-            Duration::from_millis(250),
-            active_local,
-            42,
-        )
-        .unwrap();
+        move_to_challenging(&mut migration);
 
-        handle_path_health_event(
-            PathHealthEvent::ChallengeRequested,
-            &mut migration,
-            Duration::from_millis(750),
-            active_local,
-            42,
-        )
-        .unwrap();
-
-        handle_path_health_event(
+        let action = handle_path_health_event(
             PathHealthEvent::Recovered,
             &mut migration,
             Duration::from_millis(800),
-            active_local,
-            42,
+            test_local_address(),
+            TEST_CONNECTION_ID,
         )
         .unwrap();
 
+        assert_eq!(action, PathHealthAction::None);
         assert_eq!(migration.state(), MigrationState::Healthy);
     }
 }

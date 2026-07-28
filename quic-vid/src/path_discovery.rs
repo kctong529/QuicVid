@@ -23,6 +23,10 @@ pub fn discover_ipv4_candidates(active_ip: Ipv4Addr) -> anyhow::Result<Vec<PathC
     Ok(filter_ipv4_candidates(active_ip, discovered))
 }
 
+pub fn select_candidate(candidates: &[PathCandidate]) -> Option<&PathCandidate> {
+    candidates.first()
+}
+
 fn filter_ipv4_candidates(
     active_ip: Ipv4Addr,
     candidates: impl IntoIterator<Item = PathCandidate>,
@@ -126,6 +130,20 @@ mod tests {
     }
 
     #[test]
+    fn uses_interface_name_as_stable_secondary_sort_key() {
+        let candidates = filter_ipv4_candidates(
+            "10.0.1.2".parse().unwrap(),
+            [
+                candidate("z-interface", "10.0.2.2"),
+                candidate("a-interface", "10.0.2.2"),
+            ],
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].interface_name, "a-interface");
+    }
+
+    #[test]
     fn removes_duplicate_addresses() {
         let candidates = filter_ipv4_candidates(
             "10.0.1.2".parse().unwrap(),
@@ -135,11 +153,7 @@ mod tests {
             ],
         );
 
-        assert_eq!(candidates.len(), 1);
-
-        let expected: Ipv4Addr = "10.0.2.2".parse().unwrap();
-
-        assert_eq!(candidates[0].local_ip, expected);
+        assert_eq!(candidates, vec![candidate("eth1", "10.0.2.2")]);
     }
 
     #[test]
@@ -156,10 +170,21 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn prints_discovered_local_candidates() {
-        let candidates = discover_ipv4_candidates("10.0.1.2".parse().unwrap()).unwrap();
+    fn selects_first_candidate_from_sorted_order() {
+        let candidates = vec![
+            candidate("client-eth1", "10.0.2.2"),
+            candidate("eth3", "172.20.10.4"),
+        ];
 
-        println!("{candidates:#?}");
+        let selected = select_candidate(&candidates).unwrap();
+
+        assert_eq!(selected, &candidate("client-eth1", "10.0.2.2"));
+    }
+
+    #[test]
+    fn selection_returns_none_without_candidates() {
+        let candidates = Vec::new();
+
+        assert_eq!(select_candidate(&candidates), None);
     }
 }
