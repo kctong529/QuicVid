@@ -10,6 +10,21 @@ use uuid::Uuid;
 
 const PATH_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum RecoveryStrategy {
+    Migrate,
+    Reconnect,
+}
+
+impl RecoveryStrategy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Migrate => "migrate",
+            Self::Reconnect => "reconnect",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AlternativeDiscoveryResult {
     Selected(path_discovery::PathCandidate),
@@ -84,6 +99,7 @@ pub async fn run(
     duration_seconds: u64,
     jpeg_quality: u8,
     auto_migrate: bool,
+    recovery_strategy: RecoveryStrategy,
     suspect_after_ms: u64,
     challenge_after_ms: u64,
     quiet_media_logs: bool,
@@ -104,6 +120,7 @@ pub async fn run(
         rebind,
         rebind_after_seconds,
         auto_migrate,
+        recovery_strategy,
         suspect_after_ms,
         challenge_after_ms,
     )?;
@@ -125,6 +142,11 @@ pub async fn run(
              suspect_after_ms={} \
              challenge_after_ms={}",
             suspect_after_ms, challenge_after_ms
+        );
+
+        println!(
+            "event=recovery_strategy_config strategy={}",
+            recovery_strategy.as_str()
         );
     }
 
@@ -679,6 +701,7 @@ fn validate_migration_config(
     rebind: Option<SocketAddr>,
     rebind_after_seconds: Option<f64>,
     auto_migrate: bool,
+    recovery_strategy: RecoveryStrategy,
     suspect_after_ms: u64,
     challenge_after_ms: u64,
 ) -> anyhow::Result<()> {
@@ -690,6 +713,10 @@ fn validate_migration_config(
             anyhow::bail!("--rebind-after-seconds requires --rebind");
         }
         _ => {}
+    }
+
+    if recovery_strategy == RecoveryStrategy::Reconnect && !auto_migrate {
+        anyhow::bail!("--recovery-strategy reconnect requires --auto-migrate");
     }
 
     if auto_migrate {
@@ -764,6 +791,7 @@ mod tests {
             Some("127.0.0.1:5000".parse().unwrap()),
             None,
             false,
+            RecoveryStrategy::Migrate,
             SUSPECT_AFTER_MS,
             CHALLENGE_AFTER_MS,
         );
@@ -773,22 +801,42 @@ mod tests {
 
     #[test]
     fn rebind_time_requires_rebind_address() {
-        let result =
-            validate_migration_config(None, Some(1.0), false, SUSPECT_AFTER_MS, CHALLENGE_AFTER_MS);
+        let result = validate_migration_config(
+            None,
+            Some(1.0),
+            false,
+            RecoveryStrategy::Migrate,
+            SUSPECT_AFTER_MS,
+            CHALLENGE_AFTER_MS,
+        );
 
         assert!(result.is_err());
     }
 
     #[test]
     fn automatic_migration_rejects_zero_suspect_threshold() {
-        let result = validate_migration_config(None, None, true, 0, CHALLENGE_AFTER_MS);
+        let result = validate_migration_config(
+            None,
+            None,
+            true,
+            RecoveryStrategy::Migrate,
+            0,
+            CHALLENGE_AFTER_MS,
+        );
 
         assert!(result.is_err());
     }
 
     #[test]
     fn automatic_migration_rejects_zero_challenge_threshold() {
-        let result = validate_migration_config(None, None, true, SUSPECT_AFTER_MS, 0);
+        let result = validate_migration_config(
+            None,
+            None,
+            true,
+            RecoveryStrategy::Migrate,
+            SUSPECT_AFTER_MS,
+            0,
+        );
 
         assert!(result.is_err());
     }
@@ -799,6 +847,7 @@ mod tests {
             Some("127.0.0.1:5000".parse().unwrap()),
             Some(1.0),
             true,
+            RecoveryStrategy::Migrate,
             SUSPECT_AFTER_MS,
             CHALLENGE_AFTER_MS,
         );
@@ -808,8 +857,14 @@ mod tests {
 
     #[test]
     fn automatic_migration_without_fallback_address_is_valid() {
-        let result =
-            validate_migration_config(None, None, true, SUSPECT_AFTER_MS, CHALLENGE_AFTER_MS);
+        let result = validate_migration_config(
+            None,
+            None,
+            true,
+            RecoveryStrategy::Migrate,
+            SUSPECT_AFTER_MS,
+            CHALLENGE_AFTER_MS,
+        );
 
         assert!(result.is_ok());
     }
@@ -820,6 +875,35 @@ mod tests {
             Some("127.0.0.1:5000".parse().unwrap()),
             Some(1.0),
             false,
+            RecoveryStrategy::Migrate,
+            SUSPECT_AFTER_MS,
+            CHALLENGE_AFTER_MS,
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn reconnect_strategy_requires_automatic_path_health() {
+        let result = validate_migration_config(
+            None,
+            None,
+            false,
+            RecoveryStrategy::Reconnect,
+            SUSPECT_AFTER_MS,
+            CHALLENGE_AFTER_MS,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn reconnect_strategy_with_automatic_path_health_is_valid() {
+        let result = validate_migration_config(
+            None,
+            None,
+            true,
+            RecoveryStrategy::Reconnect,
             SUSPECT_AFTER_MS,
             CHALLENGE_AFTER_MS,
         );

@@ -67,6 +67,14 @@ enum Command {
         #[arg(long)]
         auto_migrate: bool,
 
+        /// Recovery action used after persistent path degradation.
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = client::RecoveryStrategy::Migrate
+        )]
+        recovery_strategy: client::RecoveryStrategy,
+
         /// Time without path progress before entering Suspect.
         #[arg(long, default_value_t = 250)]
         suspect_after_ms: u64,
@@ -168,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
             duration_seconds,
             jpeg_quality,
             auto_migrate,
+            recovery_strategy,
             suspect_after_ms,
             challenge_after_ms,
             quiet_media_logs,
@@ -182,6 +191,7 @@ async fn main() -> anyhow::Result<()> {
                 duration_seconds,
                 jpeg_quality,
                 auto_migrate,
+                recovery_strategy,
                 suspect_after_ms,
                 challenge_after_ms,
                 quiet_media_logs,
