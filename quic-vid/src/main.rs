@@ -73,6 +73,14 @@ enum Command {
         /// Additional time spent in Suspect before requesting a challenge.
         #[arg(long, default_value_t = 250)]
         challenge_after_ms: u64,
+
+        /// Suppress per-frame and per-datagram media logs.
+        #[arg(long)]
+        quiet_media_logs: bool,
+
+        /// Suppress per-datagram logs while keeping per-frame logs.
+        #[arg(long)]
+        quiet_datagram_logs: bool,
     },
 
     /// Generate JPEG test-pattern frames for inspection.
@@ -161,6 +169,8 @@ async fn main() -> anyhow::Result<()> {
             auto_migrate,
             suspect_after_ms,
             challenge_after_ms,
+            quiet_media_logs,
+            quiet_datagram_logs,
         } => {
             client::run(
                 connect,
@@ -173,6 +183,8 @@ async fn main() -> anyhow::Result<()> {
                 auto_migrate,
                 suspect_after_ms,
                 challenge_after_ms,
+                quiet_media_logs,
+                quiet_datagram_logs,
             )
             .await
         }

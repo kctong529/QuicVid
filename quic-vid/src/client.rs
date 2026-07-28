@@ -84,7 +84,12 @@ pub async fn run(
     auto_migrate: bool,
     suspect_after_ms: u64,
     challenge_after_ms: u64,
+    quiet_media_logs: bool,
+    quiet_datagram_logs: bool,
 ) -> anyhow::Result<()> {
+    let log_frames = !quiet_media_logs;
+    let log_datagrams = !quiet_media_logs && !quiet_datagram_logs;
+
     if fps == 0 {
         anyhow::bail!("fps must be greater than zero");
     }
@@ -398,13 +403,15 @@ pub async fn run(
 
         let chunks = fragment_frame(session_id, frame_id, sent_at_ms, &jpeg, max_payload_size)?;
 
-        println!(
-            "event=jpeg_frame_encoded session={} frame={} jpeg_bytes={} chunks={}",
-            session_id,
-            frame_id,
-            jpeg.len(),
-            chunks.len(),
-        );
+        if log_frames {
+            println!(
+                "event=jpeg_frame_encoded session={} frame={} jpeg_bytes={} chunks={}",
+                session_id,
+                frame_id,
+                jpeg.len(),
+                chunks.len(),
+            );
+        }
 
         for media in chunks {
             let encoded = media.encode()?;
@@ -413,14 +420,16 @@ pub async fn run(
 
             sent_datagrams += 1;
 
-            println!(
-                "event=media_chunk_sent session={} frame={} chunk={}/{} payload_bytes={}",
-                session_id,
-                media.frame_id,
-                media.chunk_index,
-                media.chunk_count,
-                media.payload.len(),
-            );
+            if log_datagrams {
+                println!(
+                    "event=media_chunk_submitted session={} frame={} chunk={}/{} payload_bytes={}",
+                    session_id,
+                    media.frame_id,
+                    media.chunk_index,
+                    media.chunk_count,
+                    media.payload.len(),
+                );
+            }
         }
 
         sent_frames += 1;
