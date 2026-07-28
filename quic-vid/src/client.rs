@@ -10,6 +10,100 @@ use uuid::Uuid;
 
 const PATH_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+struct TransportSession {
+    endpoint: quinn::Endpoint,
+    connection: quinn::Connection,
+    session_id: Uuid,
+    max_payload_size: usize,
+}
+
+impl TransportSession {
+    fn local_addr(&self) -> anyhow::Result<SocketAddr> {
+        Ok(self.endpoint.local_addr()?)
+    }
+
+    fn connection_id(&self) -> usize {
+        self.connection.stable_id()
+    }
+}
+
+async fn connect_session(
+    connect: SocketAddr,
+    bind: SocketAddr,
+    media_run_id: Uuid,
+) -> anyhow::Result<TransportSession> {
+    let mut endpoint = quinn::Endpoint::client(bind)?;
+    endpoint.set_default_client_config(tls::client_config()?);
+
+    println!(
+        "event=client_endpoint_created bind={} local={}",
+        bind,
+        endpoint.local_addr()?
+    );
+
+    let session_id = Uuid::new_v4();
+
+    println!("event=session_created session={session_id}");
+    println!("event=connecting remote={connect}");
+
+    let connection = endpoint.connect(connect, "localhost")?.await?;
+
+    println!(
+        "event=connected session={} connection={} local={} remote={}",
+        session_id,
+        connection.stable_id(),
+        endpoint.local_addr()?,
+        connection.remote_address(),
+    );
+
+    let (mut send, mut recv) = connection.open_bi().await?;
+    let hello = control::hello(media_run_id, session_id);
+
+    send.write_all(hello.as_bytes()).await?;
+    send.finish()?;
+
+    println!(
+        "event=hello_sent media_run={} session={session_id}",
+        media_run_id
+    );
+
+    let response = recv.read_to_end(1024).await?;
+    let response = String::from_utf8(response)?;
+
+    control::validate_acknowledgement(&response, media_run_id, session_id)?;
+
+    println!(
+        "event=hello_acknowledged media_run={} session={session_id}",
+        media_run_id
+    );
+
+    let max_datagram_size = connection
+        .max_datagram_size()
+        .ok_or_else(|| anyhow::anyhow!("QUIC DATAGRAM support is unavailable"))?;
+
+    let max_payload_size = max_datagram_size
+        .checked_sub(MEDIA_HEADER_SIZE)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "QUIC DATAGRAM maximum {} is smaller than the {}-byte media header",
+                max_datagram_size,
+                MEDIA_HEADER_SIZE
+            )
+        })?;
+
+    println!(
+        "event=datagram_transport_ready session={} max_datagram_size={} max_payload_size={}",
+        session_id, max_datagram_size, max_payload_size,
+    );
+
+    Ok(TransportSession {
+        endpoint,
+        connection,
+        session_id,
+        max_payload_size,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum RecoveryStrategy {
     Migrate,
@@ -170,74 +264,11 @@ pub async fn run(
         media_run.id(), fps, duration_seconds, jpeg_quality, total_frames,
     );
 
-    let mut endpoint = quinn::Endpoint::client(bind)?;
-    endpoint.set_default_client_config(tls::client_config()?);
-
-    println!(
-        "event=client_endpoint_created bind={} local={}",
-        bind,
-        endpoint.local_addr()?
-    );
-
-    let session_id = Uuid::new_v4();
-
-    println!("event=session_created session={session_id}");
-    println!("event=connecting remote={connect}");
-
-    let connection = endpoint.connect(connect, "localhost")?.await?;
-
-    println!(
-        "event=connected session={} connection={} local={} remote={}",
-        session_id,
-        connection.stable_id(),
-        endpoint.local_addr()?,
-        connection.remote_address(),
-    );
-
-    // Initial QuicVid control handshake.
-    let (mut send, mut recv) = connection.open_bi().await?;
-    let hello = control::hello(media_run.id(), session_id);
-
-    send.write_all(hello.as_bytes()).await?;
-    send.finish()?;
-
-    println!(
-        "event=hello_sent media_run={} session={session_id}",
-        media_run.id()
-    );
-
-    let response = recv.read_to_end(1024).await?;
-    let response = String::from_utf8(response)?;
-
-    control::validate_acknowledgement(&response, media_run.id(), session_id)?;
-
-    println!(
-        "event=hello_acknowledged media_run={} session={session_id}",
-        media_run.id()
-    );
-
-    let max_datagram_size = connection
-        .max_datagram_size()
-        .ok_or_else(|| anyhow::anyhow!("QUIC DATAGRAM support is unavailable"))?;
-
-    let max_payload_size = max_datagram_size
-        .checked_sub(MEDIA_HEADER_SIZE)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "QUIC DATAGRAM maximum {} is smaller than the {}-byte media header",
-                max_datagram_size,
-                MEDIA_HEADER_SIZE
-            )
-        })?;
-
-    println!(
-        "event=datagram_transport_ready session={} max_datagram_size={} max_payload_size={}",
-        session_id, max_datagram_size, max_payload_size,
-    );
+    let transport = connect_session(connect, bind, media_run.id()).await?;
 
     let health_started = Instant::now();
 
-    let initial_ack_count = connection.stats().frame_rx.acks;
+    let initial_ack_count = transport.connection.stats().frame_rx.acks;
 
     let mut path_health = auto_migrate.then(|| {
         PathHealthMonitor::new(
@@ -263,8 +294,8 @@ pub async fn run(
          connection={} \
          local={}",
         migration.state(),
-        connection.stable_id(),
-        endpoint.local_addr()?,
+        transport.connection_id(),
+        transport.local_addr()?,
     );
 
     loop {
@@ -276,7 +307,7 @@ pub async fn run(
             let now = Instant::now();
 
             if now >= next_health_check {
-                let ack_count = connection.stats().frame_rx.acks;
+                let ack_count = transport.connection.stats().frame_rx.acks;
 
                 let event = monitor.observe(now, ack_count);
 
@@ -320,7 +351,7 @@ pub async fn run(
                 }
 
                 if event != PathHealthEvent::None {
-                    let active_local = endpoint.local_addr()?;
+                    let active_local = transport.local_addr()?;
                     let state_before_event = migration.state();
 
                     let action = handle_path_health_event(
@@ -328,7 +359,7 @@ pub async fn run(
                         &mut migration,
                         media_elapsed,
                         active_local,
-                        connection.stable_id(),
+                        transport.connection_id(),
                     )?;
 
                     if event == PathHealthEvent::Recovered
@@ -341,9 +372,9 @@ pub async fn run(
                              ack_count={} \
                              connection={}",
                             media_run.elapsed(Instant::now()).as_secs_f64(),
-                            endpoint.local_addr()?,
+                            transport.local_addr()?,
                             ack_count,
-                            connection.stable_id(),
+                            transport.connection_id(),
                         );
 
                         automatic_migration_pending = false;
@@ -354,7 +385,7 @@ pub async fn run(
                     {
                         match discover_alternative_path(active_local)? {
                             AlternativeDiscoveryResult::Selected(candidate) => {
-                                let old_local = endpoint.local_addr()?;
+                                let old_local = transport.local_addr()?;
                                 let requested_local = SocketAddr::new(candidate.local_ip.into(), 0);
 
                                 println!(
@@ -364,7 +395,7 @@ pub async fn run(
                                      connection={}",
                                     candidate.interface_name,
                                     requested_local,
-                                    connection.stable_id(),
+                                    transport.connection_id(),
                                 );
 
                                 println!(
@@ -378,32 +409,33 @@ pub async fn run(
                                     old_local,
                                     requested_local,
                                     candidate.interface_name,
-                                    connection.stable_id(),
+                                    transport.connection_id(),
                                 );
 
-                                let new_local = match rebind_endpoint(&endpoint, requested_local) {
-                                    Ok(new_local) => new_local,
+                                let new_local =
+                                    match rebind_endpoint(&transport.endpoint, requested_local) {
+                                        Ok(new_local) => new_local,
 
-                                    Err(error) => {
-                                        println!(
-                                            "event=automatic_rebind_failed \
+                                        Err(error) => {
+                                            println!(
+                                                "event=automatic_rebind_failed \
                                              elapsed_seconds={:.3} \
                                              old_local={} \
                                              requested_local={} \
                                              interface={} \
                                              connection={} \
                                              error={}",
-                                            media_run.elapsed(Instant::now()).as_secs_f64(),
-                                            old_local,
-                                            requested_local,
-                                            candidate.interface_name,
-                                            connection.stable_id(),
-                                            error,
-                                        );
+                                                media_run.elapsed(Instant::now()).as_secs_f64(),
+                                                old_local,
+                                                requested_local,
+                                                candidate.interface_name,
+                                                transport.connection_id(),
+                                                error,
+                                            );
 
-                                        return Err(error);
-                                    }
-                                };
+                                            return Err(error);
+                                        }
+                                    };
 
                                 migration.transition(
                                     MigrationState::Migrating,
@@ -412,7 +444,7 @@ pub async fn run(
                                         elapsed: media_run.elapsed(Instant::now()),
                                         active_local: old_local,
                                         candidate_local: Some(new_local),
-                                        connection_id: connection.stable_id(),
+                                        connection_id: transport.connection_id(),
                                     },
                                 )?;
 
@@ -426,7 +458,7 @@ pub async fn run(
                                     media_run.elapsed(Instant::now()).as_secs_f64(),
                                     old_local,
                                     new_local,
-                                    connection.stable_id(),
+                                    transport.connection_id(),
                                 );
 
                                 automatic_migration_pending = true;
@@ -446,7 +478,7 @@ pub async fn run(
         if !rebound {
             if let (Some(rebind_addr), Some(rebind_after)) = (rebind, rebind_after_seconds) {
                 if elapsed >= rebind_after {
-                    let old_addr = endpoint.local_addr()?;
+                    let old_addr = transport.local_addr()?;
                     let elapsed_duration = media_elapsed;
 
                     println!(
@@ -461,7 +493,7 @@ pub async fn run(
                         elapsed: elapsed_duration,
                         active_local: old_addr,
                         candidate_local: Some(rebind_addr),
-                        connection_id: connection.stable_id(),
+                        connection_id: transport.connection_id(),
                     };
 
                     migration.transition(
@@ -482,7 +514,7 @@ pub async fn run(
                         context,
                     )?;
 
-                    let new_addr = rebind_endpoint(&endpoint, rebind_addr)?;
+                    let new_addr = rebind_endpoint(&transport.endpoint, rebind_addr)?;
 
                     println!(
                         "event=endpoint_rebound \
@@ -493,7 +525,7 @@ pub async fn run(
                         elapsed,
                         old_addr,
                         new_addr,
-                        connection.stable_id()
+                        transport.connection_id()
                     );
 
                     migration.transition(
@@ -503,7 +535,7 @@ pub async fn run(
                             elapsed: media_run.elapsed(Instant::now()),
                             active_local: new_addr,
                             candidate_local: None,
-                            connection_id: connection.stable_id(),
+                            connection_id: transport.connection_id(),
                         },
                     )?;
 
@@ -529,13 +561,19 @@ pub async fn run(
 
         let sent_at_ms = unix_time_ms()?;
 
-        let chunks = fragment_frame(session_id, frame_id, sent_at_ms, &jpeg, max_payload_size)?;
+        let chunks = fragment_frame(
+            transport.session_id,
+            frame_id,
+            sent_at_ms,
+            &jpeg,
+            transport.max_payload_size,
+        )?;
 
         if log_frames {
             println!(
                 "event=jpeg_frame_encoded media_run={} session={} frame={} jpeg_bytes={} chunks={}",
                 media_run.id(),
-                session_id,
+                transport.session_id,
                 frame_id,
                 jpeg.len(),
                 chunks.len(),
@@ -545,7 +583,7 @@ pub async fn run(
         for media in chunks {
             let encoded = media.encode()?;
 
-            connection.send_datagram(encoded.into())?;
+            transport.connection.send_datagram(encoded.into())?;
 
             sent_datagrams += 1;
 
@@ -553,7 +591,7 @@ pub async fn run(
                 println!(
                     "event=media_chunk_submitted media_run={} session={} frame={} chunk={}/{} payload_bytes={}",
                     media_run.id(),
-                    session_id,
+                    transport.session_id,
                     media.frame_id,
                     media.chunk_index,
                     media.chunk_count,
@@ -568,7 +606,7 @@ pub async fn run(
     println!(
         "event=jpeg_video_send_summary media_run={} session={} frames={} datagrams={} fps={} duration_seconds={} jpeg_quality={}",
         media_run.id(),
-        session_id,
+        transport.session_id,
         sent_frames,
         sent_datagrams,
         fps,
@@ -577,9 +615,9 @@ pub async fn run(
     );
 
     // Send the authoritative final frame count on a second control stream.
-    let (mut done_send, mut done_recv) = connection.open_bi().await?;
+    let (mut done_send, mut done_recv) = transport.connection.open_bi().await?;
     let final_frame_exclusive = media_run.total_frames();
-    let done = control::done(media_run.id(), session_id, final_frame_exclusive);
+    let done = control::done(media_run.id(), transport.session_id, final_frame_exclusive);
 
     done_send.write_all(done.as_bytes()).await?;
     done_send.finish()?;
@@ -587,23 +625,25 @@ pub async fn run(
     println!(
         "event=jpeg_video_done_sent media_run={} session={} final_frame_exclusive={}",
         media_run.id(),
-        session_id,
+        transport.session_id,
         final_frame_exclusive,
     );
 
     let response = done_recv.read_to_end(1024).await?;
     let response = String::from_utf8(response)?;
 
-    control::validate_done_acknowledgement(&response, media_run.id(), session_id)?;
+    control::validate_done_acknowledgement(&response, media_run.id(), transport.session_id)?;
 
     println!(
         "event=jpeg_video_done_acknowledged media_run={} session={} final_frame_exclusive={}",
         media_run.id(),
-        session_id,
+        transport.session_id,
         final_frame_exclusive,
     );
-    connection.close(0u32.into(), b"JPEG video complete");
-    endpoint.wait_idle().await;
+    transport
+        .connection
+        .close(0u32.into(), b"JPEG video complete");
+    transport.endpoint.wait_idle().await;
 
     println!(
         "event=media_run_completed media_run={} final_frame_exclusive={} sessions=1",
@@ -613,7 +653,7 @@ pub async fn run(
     println!(
         "event=client_stopped media_run={} session={}",
         media_run.id(),
-        session_id
+        transport.session_id
     );
 
     Ok(())
