@@ -128,7 +128,7 @@ enum AlternativeDiscoveryResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PathHealthAction {
     None,
-    DiscoverAlternative,
+    RecoverUsing(RecoveryStrategy),
 }
 
 fn discover_alternative_path(
@@ -356,6 +356,7 @@ pub async fn run(
 
                     let action = handle_path_health_event(
                         event,
+                        recovery_strategy,
                         &mut migration,
                         media_elapsed,
                         active_local,
@@ -380,92 +381,124 @@ pub async fn run(
                         automatic_migration_pending = false;
                     }
 
-                    if action == PathHealthAction::DiscoverAlternative
-                        && !automatic_migration_pending
-                    {
-                        match discover_alternative_path(active_local)? {
-                            AlternativeDiscoveryResult::Selected(candidate) => {
-                                let old_local = transport.local_addr()?;
-                                let requested_local = SocketAddr::new(candidate.local_ip.into(), 0);
+                    if !automatic_migration_pending {
+                        if let PathHealthAction::RecoverUsing(strategy) = action {
+                            match discover_alternative_path(active_local)? {
+                                AlternativeDiscoveryResult::Selected(candidate) => match strategy {
+                                    RecoveryStrategy::Migrate => {
+                                        let old_local = transport.local_addr()?;
+                                        let requested_local =
+                                            SocketAddr::new(candidate.local_ip.into(), 0);
 
-                                println!(
-                                    "event=automatic_migration_candidate_ready \
-                                     interface={} \
-                                     candidate_local={} \
-                                     connection={}",
-                                    candidate.interface_name,
-                                    requested_local,
-                                    transport.connection_id(),
-                                );
+                                        println!(
+                                            "event=automatic_migration_candidate_ready \
+                                         interface={} \
+                                         candidate_local={} \
+                                         connection={}",
+                                            candidate.interface_name,
+                                            requested_local,
+                                            transport.connection_id(),
+                                        );
 
-                                println!(
-                                    "event=automatic_rebind_started \
-                                     elapsed_seconds={:.3} \
-                                     old_local={} \
-                                     requested_local={} \
-                                     interface={} \
-                                     connection={}",
-                                    media_run.elapsed(Instant::now()).as_secs_f64(),
-                                    old_local,
-                                    requested_local,
-                                    candidate.interface_name,
-                                    transport.connection_id(),
-                                );
+                                        println!(
+                                            "event=automatic_rebind_started \
+                                         elapsed_seconds={:.3} \
+                                         old_local={} \
+                                         requested_local={} \
+                                         interface={} \
+                                         connection={}",
+                                            media_run.elapsed(Instant::now()).as_secs_f64(),
+                                            old_local,
+                                            requested_local,
+                                            candidate.interface_name,
+                                            transport.connection_id(),
+                                        );
 
-                                let new_local =
-                                    match rebind_endpoint(&transport.endpoint, requested_local) {
-                                        Ok(new_local) => new_local,
+                                        let new_local = match rebind_endpoint(
+                                            &transport.endpoint,
+                                            requested_local,
+                                        ) {
+                                            Ok(new_local) => new_local,
 
-                                        Err(error) => {
-                                            println!(
-                                                "event=automatic_rebind_failed \
-                                             elapsed_seconds={:.3} \
-                                             old_local={} \
-                                             requested_local={} \
-                                             interface={} \
-                                             connection={} \
-                                             error={}",
-                                                media_run.elapsed(Instant::now()).as_secs_f64(),
-                                                old_local,
-                                                requested_local,
-                                                candidate.interface_name,
-                                                transport.connection_id(),
-                                                error,
-                                            );
+                                            Err(error) => {
+                                                println!(
+                                                    "event=automatic_rebind_failed \
+                                                 elapsed_seconds={:.3} \
+                                                 old_local={} \
+                                                 requested_local={} \
+                                                 interface={} \
+                                                 connection={} \
+                                                 error={}",
+                                                    media_run.elapsed(Instant::now()).as_secs_f64(),
+                                                    old_local,
+                                                    requested_local,
+                                                    candidate.interface_name,
+                                                    transport.connection_id(),
+                                                    error,
+                                                );
 
-                                            return Err(error);
-                                        }
-                                    };
+                                                return Err(error);
+                                            }
+                                        };
 
-                                migration.transition(
-                                    MigrationState::Migrating,
-                                    MigrationReason::AlternatePathReady,
-                                    MigrationContext {
-                                        elapsed: media_run.elapsed(Instant::now()),
-                                        active_local: old_local,
-                                        candidate_local: Some(new_local),
-                                        connection_id: transport.connection_id(),
-                                    },
-                                )?;
+                                        migration.transition(
+                                            MigrationState::Migrating,
+                                            MigrationReason::AlternatePathReady,
+                                            MigrationContext {
+                                                elapsed: media_run.elapsed(Instant::now()),
+                                                active_local: old_local,
+                                                candidate_local: Some(new_local),
+                                                connection_id: transport.connection_id(),
+                                            },
+                                        )?;
 
-                                println!(
-                                    "event=endpoint_rebound \
-                                     mode=automatic \
-                                     elapsed_seconds={:.3} \
-                                     old_local={} \
-                                     new_local={} \
-                                     connection={}",
-                                    media_run.elapsed(Instant::now()).as_secs_f64(),
-                                    old_local,
-                                    new_local,
-                                    transport.connection_id(),
-                                );
+                                        println!(
+                                            "event=endpoint_rebound \
+                                         mode=automatic \
+                                         elapsed_seconds={:.3} \
+                                         old_local={} \
+                                         new_local={} \
+                                         connection={}",
+                                            media_run.elapsed(Instant::now()).as_secs_f64(),
+                                            old_local,
+                                            new_local,
+                                            transport.connection_id(),
+                                        );
 
-                                automatic_migration_pending = true;
-                            }
+                                        automatic_migration_pending = true;
+                                    }
 
-                            AlternativeDiscoveryResult::NoAlternative => {
-                                // Remain in Challenging. Retry policy is outside the current prototype scope.
+                                    RecoveryStrategy::Reconnect => {
+                                        let requested_local =
+                                            SocketAddr::new(candidate.local_ip.into(), 0);
+
+                                        println!(
+                                            "event=reconnect_requested \
+                                         elapsed_seconds={:.3} \
+                                         reason=path_degradation_persisted \
+                                         active_local={} \
+                                         requested_local={} \
+                                         interface={} \
+                                         old_session={} \
+                                         old_connection={}",
+                                            media_run.elapsed(Instant::now()).as_secs_f64(),
+                                            active_local,
+                                            requested_local,
+                                            candidate.interface_name,
+                                            transport.session_id,
+                                            transport.connection_id(),
+                                        );
+
+                                        anyhow::bail!(
+                                            "proactive reconnect was selected but replacement \
+                                         connection establishment is not implemented yet"
+                                        );
+                                    }
+                                },
+
+                                AlternativeDiscoveryResult::NoAlternative => {
+                                    // Remain in Challenging. Retry policy is outside the current prototype scope.
+                                }
                             }
                         }
                     }
@@ -661,6 +694,7 @@ pub async fn run(
 
 fn handle_path_health_event(
     event: PathHealthEvent,
+    recovery_strategy: RecoveryStrategy,
     migration: &mut MigrationController,
     elapsed: Duration,
     active_local: SocketAddr,
@@ -718,7 +752,7 @@ fn handle_path_health_event(
                 connection_id,
             );
 
-            Ok(PathHealthAction::DiscoverAlternative)
+            Ok(PathHealthAction::RecoverUsing(recovery_strategy))
         }
     }
 }
@@ -791,6 +825,7 @@ mod tests {
     fn move_to_suspect(migration: &mut MigrationController) -> PathHealthAction {
         handle_path_health_event(
             PathHealthEvent::BecameSuspect,
+            RecoveryStrategy::Migrate,
             migration,
             Duration::from_millis(250),
             test_local_address(),
@@ -804,6 +839,7 @@ mod tests {
 
         handle_path_health_event(
             PathHealthEvent::ChallengeRequested,
+            RecoveryStrategy::Migrate,
             migration,
             Duration::from_millis(750),
             test_local_address(),
@@ -957,6 +993,7 @@ mod tests {
 
         let action = handle_path_health_event(
             PathHealthEvent::None,
+            RecoveryStrategy::Migrate,
             &mut migration,
             Duration::ZERO,
             test_local_address(),
@@ -986,6 +1023,7 @@ mod tests {
 
         let action = handle_path_health_event(
             PathHealthEvent::Recovered,
+            RecoveryStrategy::Migrate,
             &mut migration,
             Duration::from_millis(350),
             test_local_address(),
@@ -1003,7 +1041,41 @@ mod tests {
 
         let action = move_to_challenging(&mut migration);
 
-        assert_eq!(action, PathHealthAction::DiscoverAlternative);
+        assert_eq!(
+            action,
+            PathHealthAction::RecoverUsing(RecoveryStrategy::Migrate)
+        );
+        assert_eq!(migration.state(), MigrationState::Challenging);
+    }
+
+    #[test]
+    fn persistent_degradation_routes_to_reconnect_strategy() {
+        let mut migration = MigrationController::new();
+
+        handle_path_health_event(
+            PathHealthEvent::BecameSuspect,
+            RecoveryStrategy::Reconnect,
+            &mut migration,
+            Duration::from_millis(250),
+            test_local_address(),
+            TEST_CONNECTION_ID,
+        )
+        .unwrap();
+
+        let action = handle_path_health_event(
+            PathHealthEvent::ChallengeRequested,
+            RecoveryStrategy::Reconnect,
+            &mut migration,
+            Duration::from_millis(750),
+            test_local_address(),
+            TEST_CONNECTION_ID,
+        )
+        .unwrap();
+
+        assert_eq!(
+            action,
+            PathHealthAction::RecoverUsing(RecoveryStrategy::Reconnect)
+        );
         assert_eq!(migration.state(), MigrationState::Challenging);
     }
 
@@ -1030,6 +1102,7 @@ mod tests {
 
         let action = handle_path_health_event(
             PathHealthEvent::Recovered,
+            RecoveryStrategy::Migrate,
             &mut migration,
             Duration::from_millis(900),
             new_local,
@@ -1047,6 +1120,7 @@ mod tests {
 
         let action = handle_path_health_event(
             PathHealthEvent::Recovered,
+            RecoveryStrategy::Migrate,
             &mut migration,
             Duration::from_millis(100),
             test_local_address(),
@@ -1066,6 +1140,7 @@ mod tests {
 
         let action = handle_path_health_event(
             PathHealthEvent::Recovered,
+            RecoveryStrategy::Migrate,
             &mut migration,
             Duration::from_millis(800),
             test_local_address(),
@@ -1101,6 +1176,7 @@ mod tests {
 
         let action = handle_path_health_event(
             PathHealthEvent::Recovered,
+            RecoveryStrategy::Migrate,
             &mut migration,
             Duration::from_millis(900),
             new_local,
