@@ -1,0 +1,8 @@
+# Raw outputs from rerunning the experiment locally
+*/client.log
+*/server.log
+*/runner.stdout.log
+*/runner.stderr.log
+*/path-*-tcpdump.log
+*/impairment.log
+*/command.json
