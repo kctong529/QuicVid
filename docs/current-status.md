@@ -1,6 +1,6 @@
 # Current status
 
-Updated after completion of Epic 5.3.
+Updated during Epic 5.4 after completing aggregate analysis and result plots.
 
 ## Working implementation
 
@@ -14,32 +14,25 @@ Migration preserves the media run, session, and Quinn connection. Reconnect
 preserves the media run and frame timeline while creating a new connection,
 session, and HELLO.
 
-## Measurement pipeline
+## Measurement and comparison pipeline
 
 ```text
 migration_demo.py
     -> client.log + server.log
     -> recovery_result.py
     -> result.json
-    -> recovery_summary.py / recovery_experiment.py
-    -> summary.csv
+    -> recovery_summary.py
+    -> trial summary.csv
+    -> recovery_compare.py
+    -> aggregate summary.csv + summary.md
+    -> recovery_plot_alternatives.py
+    -> final figures
 ```
-
-Modules:
-
-- `recovery_analysis.py` parses structured events;
-- `recovery_identity.py` extracts run/session/connection identities;
-- `recovery_frames.py` unions validated frames across sessions;
-- `recovery_timing.py` extracts strategy-specific action timing;
-- `recovery_continuity.py` measures frame-ID and receiver-time gaps;
-- `recovery_result.py` writes versioned per-run JSON;
-- `recovery_summary.py` exports flat CSV rows;
-- `recovery_experiment.py` runs repeated interleaved trials;
-- `verify_recovery.py` checks lifecycle evidence.
 
 ## Committed experiment
 
-`results/recovery-experiment-01/` contains 10 migration and 10 reconnect runs.
+`results/recovery-experiment-01/` contains ten migration and ten reconnect
+runs. All 20 completed successfully and produced zero analysis errors.
 
 | Metric | Migration | Reconnect |
 |---|---:|---:|
@@ -51,12 +44,36 @@ Modules:
 | Duplicate frames | 0 | 0 |
 | Out-of-order frames | 0 | 0 |
 
-The first experiment shows a trade-off: reconnect resumed receiver activity
-sooner, while migration preserved more frames and transport identity.
+The comparison shows a measured trade-off:
+
+- reconnect resumed receiver activity sooner;
+- migration preserved more frames;
+- migration retained one Quinn connection and QuicVid session;
+- reconnect created a replacement connection and session;
+- both preserved the same logical media run and global frame timeline.
+
+Final result figures:
+
+```text
+results/recovery-experiment-01/analysis/plots/
+├── receive-gap-histogram.png
+└── missing-frames-frequency.png
+```
+
+The migration outlier `migrate-003` is retained in all statistics and plots.
+
+## Metric interpretation
+
+`largest_receive_gap_ms` is the primary cross-strategy interruption metric.
+
+Strategy-specific action duration is diagnostic only because migration and
+reconnect use different completion events.
+
+Reconnect frame loss is aggregated across both transport sessions by
+`media_run_id`; the S2-local receive summary is not treated as the global
+result.
 
 ## Tests
-
-The Python recovery suite contains 63 tests.
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -72,8 +89,14 @@ cargo clippy --manifest-path quic-vid/Cargo.toml   --all-targets --all-features 
 cargo build --release --manifest-path quic-vid/Cargo.toml
 ```
 
-## Active work
+## Remaining Epic 5.4 work
 
-Epic 5.4 remains: final aggregate statistics and plots, interpretation and
-limitations, verified demo clips, advisor walkthrough, final report, and
-submission packaging. No new recovery mechanism is planned.
+- produce one verified final migration run;
+- produce one verified final reconnect run;
+- record short demonstration clips;
+- prepare the advisor-facing walkthrough;
+- update the final report;
+- validate the documented workflow from a clean checkout;
+- prepare the submission package.
+
+No new recovery mechanism is planned.
