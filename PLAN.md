@@ -2,7 +2,7 @@
 
 ## Purpose of this document
 
-This file describes how the project is organized, tracked, validated, and
+This file describes how the project was organized, tracked, validated, and
 brought to completion.
 
 Technical usage belongs in `README.md` and `docs/`. Detailed work discussions
@@ -10,10 +10,9 @@ belong in GitHub issues. This plan provides the project-management view:
 
 - project objective and scope;
 - milestone and epic structure;
-- current status;
-- deliverables and acceptance gates;
+- delivered work and acceptance gates;
 - risks, decisions, and dependencies;
-- remaining work toward submission.
+- remaining submission work.
 
 ## Project context
 
@@ -28,39 +27,37 @@ mobile-style handover, and wider application comparisons. Early experiments
 showed that this scope was too broad for the available project time and that a
 smaller, measurable prototype would provide a stronger engineering result.
 
-The active plan therefore focuses on a Quinn-based media prototype, controlled
-dual-path Mininet experiments, proactive migration and reconnect, and a
-reproducible evaluation pipeline.
+The completed project therefore focuses on a Quinn-based media prototype,
+controlled dual-path Mininet experiments, proactive migration and reconnect,
+and a reproducible evaluation pipeline.
 
-Earlier planning material is retained as project history, not as the current
+Earlier planning material is retained as project history, not as the final
 delivery contract.
-
 
 ## Estimated workload
 
 The course workload target is approximately **270 hours**.
 
-The project board already records estimated hours for the milestone and epic
-issues. Those existing estimates remain the primary planning figures.
+The project board records the detailed milestone and epic estimates. The
+following table provides the planning summary.
 
-| Work package | Existing board estimate | Planning status |
+| Work package | Existing board estimate | Status |
 |---|---:|---|
-| Milestone 1 — Fake-video QUIC baseline | 65 h | Documented |
-| Milestone 2 — Visible JPEG transport | 43 h | Documented |
-| Milestone 3 — Controlled migration | 30 h | Documented |
-| Milestone 4 — Automatic migration | 39 h | Documented |
-| Epic 5.1 — Continuous media timeline | 8 h | Documented |
-| Epic 5.2 — Proactive reconnect baseline | 12 h | Documented |
-| Epic 5.3 — Measurement and automation | 20 h | Documented |
+| Milestone 1 — Fake-video QUIC baseline | 65 h | Complete |
+| Milestone 2 — Visible JPEG transport | 43 h | Complete |
+| Milestone 3 — Controlled migration | 30 h | Complete |
+| Milestone 4 — Automatic migration | 39 h | Complete |
+| Epic 5.1 — Continuous media timeline | 8 h | Complete |
+| Epic 5.2 — Proactive reconnect baseline | 12 h | Complete |
+| Epic 5.3 — Measurement and automation | 20 h | Complete |
 | **Documented subtotal** | **217 h** |  |
-| Pre-milestone discovery and early prototypes | **30 h** | Meetings, scope validation, technology exploration, and early prototypes |
-| Epic 5.4 — Final analysis and delivery | **10 h** | Remaining analysis, report, demos, and submission work |
+| Pre-milestone discovery and early prototypes | **30 h** | Complete |
+| Epic 5.4 — Final analysis and delivery | **10 h** | Complete |
 | **Currently allocated total** | **257 h** |  |
-| **Remaining toward course target** | **13 h** | Unallocated reserve or additional documented work |
+| **Remaining toward course target** | **13 h** | Final report, meetings, validation, and submission |
 | **Course target** | **270 h** |  |
 
-The pre-milestone estimate covers work completed before the milestone structure
-was introduced:
+The pre-milestone estimate covers:
 
 - advisor meetings;
 - project-definition and scope discussions;
@@ -68,23 +65,17 @@ was introduced:
 - feasibility validation;
 - the early `quinn-ping` and `mouse-coordinates` prototypes.
 
-The 10-hour Epic 5.4 estimate covers the remaining final-analysis and delivery
-work:
+Epic 5.4 delivered:
 
-- aggregate statistics and plots;
+- aggregate comparison statistics;
+- report-ready figures;
 - interpretation and limitations;
-- final report updates;
-- verified demonstration clips;
-- advisor walkthrough;
-- clean-checkout validation and submission packaging.
+- a preview-mode demonstration clip;
+- advisor-facing repository documentation;
+- final documentation consistency work.
 
-With these allocations, **257 hours** are currently accounted for. This is close
-to the approximately **270-hour** course target and should be sufficient for
-project-planning purposes. Any remaining difference can be covered by final
-reporting, meetings, documentation, validation, and submission work.
-
-This table is a project-planning summary. The detailed time log remains the
-authoritative record for final course reporting.
+The detailed time log remains the authoritative record for final course
+reporting.
 
 ## Project objective
 
@@ -106,7 +97,7 @@ Healthy -> Suspect -> Challenging
                                 preserve logical media run and frame timeline
 ```
 
-The project should answer:
+The project answers:
 
 1. Can the media run complete after the active path fails?
 2. Can migration preserve the existing QUIC connection and application
@@ -132,6 +123,7 @@ The project should answer:
 - sustained Path A failure;
 - structured logs and automated verification;
 - repeated comparative experiments;
+- aggregate statistics and plots;
 - report-ready results and demonstration evidence.
 
 ### Excluded
@@ -154,7 +146,7 @@ requirements.
 
 ## Work-management model
 
-The project is managed through:
+The project was managed through:
 
 ```text
 Milestone
@@ -173,18 +165,10 @@ Working rules:
 4. Record notable implementation evidence in the relevant issue.
 5. Commit compact structured results, not large reproducible raw logs.
 6. Update documentation when the implemented workflow changes.
-7. Move statistical interpretation and presentation work to Epic 5.4 rather
-   than expanding Epic 5.3 indefinitely.
 
-## Milestone structure
+## Milestone status
 
 ### M1 — Fake-video QUIC baseline: complete
-
-Goal:
-
-- establish a working Quinn client/server baseline;
-- send generated media-like traffic over QUIC DATAGRAMs;
-- record delivery behavior.
 
 Delivered:
 
@@ -194,15 +178,11 @@ Delivered:
 - DATAGRAM delivery;
 - run summaries.
 
-Exit gate:
+Acceptance met:
 
 - client and server complete a media run without recovery.
 
 ### M2 — Visible JPEG transport: complete
-
-Goal:
-
-- replace synthetic payload-only traffic with visible generated JPEG frames.
 
 Delivered:
 
@@ -211,15 +191,11 @@ Delivered:
 - complete-frame validation;
 - receiver preview.
 
-Exit gate:
+Acceptance met:
 
 - receiver displays and validates generated frames.
 
 ### M3 — Controlled migration: complete
-
-Goal:
-
-- demonstrate continuity when the endpoint is explicitly rebound.
 
 Delivered:
 
@@ -229,39 +205,49 @@ Delivered:
 - same connection and session after rebind;
 - continued media delivery.
 
-Exit gate:
+Acceptance met:
 
 - controlled Path A to Path B migration completes without creating another
   application session.
 
 ### M4 — Automatic migration: complete
 
-Goal:
-
-- detect a sustained loss of progress and trigger migration automatically.
-
 Delivered:
 
-- `Healthy`, `Suspect`, `Challenging`, and migration states;
+- `Healthy`, `Suspect`, and `Challenging` health states;
 - ACK-progress health signal;
 - deterministic alternate-address discovery;
-- automatic rebind;
+- automatic endpoint rebind;
 - resumed-progress confirmation.
 
-Exit gate:
+Acceptance met:
 
 - sustained Path A failure triggers automatic migration and the run completes
   through Path B.
 
-### M5 — Comparative evaluation: active
+### M5 — Comparative evaluation: complete
 
-Goal:
+Delivered through Epics 5.1–5.4:
 
-- compare migration with proactive reconnect under the same detector and
-  failure scenario;
-- produce reproducible results and submission-ready evidence.
+- continuous media timeline above transport sessions;
+- proactive reconnect using the same detector and decision point;
+- schema-versioned per-run JSON;
+- cross-session frame aggregation;
+- receiver-visible continuity metrics;
+- noninteractive repeated experiments;
+- 10 migration and 10 reconnect trials;
+- aggregate statistics and final figures;
+- interpreted findings and limitations;
+- preview-mode demonstration evidence;
+- advisor-facing documentation.
 
-M5 is split into four epics.
+Acceptance met:
+
+- both strategies completed all committed runs;
+- migration used one connection and session;
+- reconnect used two connections and sessions;
+- both preserved one logical media run and continuous frame timeline;
+- results are reproducible from committed structured records.
 
 ## Epic status
 
@@ -276,10 +262,6 @@ Delivered:
 - migration preserves run/session identity;
 - reconnect preserves the run but replaces the session.
 
-Acceptance:
-
-- reconnect does not restart the timeline from frame zero.
-
 ### Epic 5.2 — Proactive reconnect baseline: complete
 
 Delivered:
@@ -290,12 +272,6 @@ Delivered:
 - second HELLO for the same media run;
 - resumption from the live timeline;
 - reconnect-specific verification.
-
-Acceptance:
-
-- migration uses one connection/session;
-- reconnect uses two distinct connections/sessions;
-- both complete the same logical media run.
 
 ### Epic 5.3 — Measurement and experiment automation: complete
 
@@ -313,50 +289,32 @@ Delivered:
 - noninteractive Mininet launcher;
 - interleaved repeated-run driver;
 - timeout and failure handling;
-- 63 focused Python tests;
+- focused Python tests;
 - committed 10-migration and 10-reconnect dataset.
 
-Committed evidence:
+### Epic 5.4 — Comparative results and final demo: complete
 
-```text
-results/recovery-experiment-01/
-├── README.md
-├── summary.csv
-└── runs/
-    ├── migrate-001.json
-    ├── ...
-    └── reconnect-010.json
-```
+Delivered:
 
-Acceptance:
-
-- all 20 committed runs complete;
-- all results are analyzable;
-- no analysis errors;
-- migration and reconnect identity expectations are met;
-- summary CSV is reproducible from per-run results.
-
-### Epic 5.4 — Comparative results and final demo: active
-
-Purpose:
-
-- turn the verified Epic 5.3 dataset into the final engineering conclusion and
-  submission package.
-
-Remaining deliverables:
-
-- aggregate statistics;
-- report-ready comparison tables;
-- plots with individual observations;
-- interpretation of receiver gap versus frame preservation;
+- aggregate descriptive statistics;
+- report-ready result tables;
+- receive-gap histogram;
+- missing-frame frequency plot;
+- interpretation of receiver interruption and frame preservation;
+- transport/session identity comparison;
+- outlier discussion;
 - limitations and threats to validity;
-- verified migration and reconnect demonstration clips;
-- advisor-facing walkthrough;
-- final report updates;
-- clean-repository and clean-checkout validation;
+- preview-mode demonstration clip;
+- advisor-facing repository entry point.
+
+Remaining work belongs to final course submission rather than implementation:
+
+- final report editing;
+- advisor walkthrough;
+- final clean-checkout validation;
 - submission packaging.
 
-## Current baseline experiment
+## Final baseline experiment
 
 Configuration:
 
@@ -374,7 +332,7 @@ trials per strategy:    10
 execution order:        interleaved
 ```
 
-Current descriptive result:
+Result:
 
 | Metric | Migration | Reconnect |
 |---|---:|---:|
@@ -383,9 +341,8 @@ Current descriptive result:
 | Mean largest receive gap | 973.3 ms | 830.2 ms |
 | Median missing frames | 2 | 7 |
 | Mean missing frames | 2.4 | 7.6 |
-| Median recovery-action duration | 156 ms | 1 ms |
 
-Working interpretation:
+Interpretation:
 
 - reconnect restored receiver activity sooner;
 - migration preserved more frames;
@@ -393,8 +350,7 @@ Working interpretation:
 - reconnect created a replacement connection and session;
 - both strategies completed every tested run.
 
-This interpretation remains preliminary until Epic 5.4 completes the final
-statistics, plots, limitations, and report discussion.
+The result shows a trade-off rather than one universally superior strategy.
 
 ## Deliverables
 
@@ -410,20 +366,19 @@ statistics, plots, limitations, and report discussion.
 - committed per-run JSON records;
 - flat trial CSV;
 - aggregate statistics;
-- plots;
-- representative verified logs;
-- migration and reconnect video clips;
-- Git revision and experiment metadata.
+- final plots;
+- preview-mode demonstration clip;
+- Git revision and environment metadata.
 
 ### Documentation deliverables
 
-- project README;
+- advisor-oriented project README;
 - current-status document;
 - Mininet workflow guide;
 - recovery-analysis guide;
 - result dataset README;
-- final report;
-- advisor presentation outline.
+- final comparison analysis;
+- final report.
 
 ## Quality gates
 
@@ -467,18 +422,21 @@ Before submission:
 - commands work from a clean checkout;
 - generated artifacts and committed evidence are clearly separated.
 
-## Dependencies
+## Reproducibility environment
 
-Epic 5.4 depends on:
+The final recorded environment is:
 
-- the committed Epic 5.3 dataset;
-- stable result schema version 1;
-- working noninteractive launcher;
-- working lifecycle verifier;
-- final report structure;
-- access to a functioning Mininet environment for demonstration recording.
-
-No further recovery implementation is currently required.
+```text
+Git revision:       631d82d18d5cd4542f3132078a14fb6a7815fda6
+Operating system:   Ubuntu 24.04.1 LTS
+Kernel:             Linux 6.8.0-136-generic, aarch64
+Python:             3.12.3
+Pillow:             10.2.0
+Rust compiler:      rustc 1.92.0
+Cargo:              1.92.0
+Open vSwitch:       3.3.4
+iproute2:           6.1.0
+```
 
 ## Decision record
 
@@ -512,15 +470,19 @@ Important project decisions:
 
 ## Completion criteria
 
-The project is complete when:
+Implementation and evaluation are complete when:
 
 - both recovery strategies are implemented and verified;
 - the continuous media timeline is demonstrated;
 - repeated experiment results are reproducible;
 - aggregate statistics and plots are generated;
 - measured findings and limitations are documented;
-- final demo evidence is verified;
-- the advisor-facing walkthrough is prepared;
-- the report answers the engineering question;
-- all code, test, build, and documentation gates pass;
-- the repository and submission package are clean and understandable.
+- final demo evidence is available;
+- the repository gives the advisor a clear evaluation path.
+
+Final submission is complete when:
+
+- the final report answers the engineering question;
+- code, test, build, and documentation gates pass from a clean checkout;
+- the repository contains no temporary or generated cache files;
+- the submission package is clean and understandable.

@@ -1,18 +1,30 @@
 # Current status
 
-Updated during Epic 5.4 after completing aggregate analysis and result plots.
+Updated after completing the comparative analysis, final figures,
+demonstration clip, and advisor-facing documentation.
 
-## Working implementation
+## Project state
 
-The active `quic-vid` application supports Quinn client/server modes, QUIC
-stream control, generated JPEG video over fragmented QUIC DATAGRAMs,
-receiver-side reassembly and preview, transport-independent media runs,
-controlled and automatic migration, proactive reconnect, continuous frame IDs
-across reconnect, and global completion through the active session.
+The implementation and comparative evaluation are complete.
 
-Migration preserves the media run, session, and Quinn connection. Reconnect
-preserves the media run and frame timeline while creating a new connection,
-session, and HELLO.
+The active `quic-vid` application supports:
+
+- Quinn client and server modes;
+- QUIC stream control messages;
+- generated JPEG video over fragmented QUIC DATAGRAMs;
+- receiver-side reassembly and preview;
+- transport-independent media runs;
+- controlled and automatic migration;
+- proactive reconnect;
+- continuous frame IDs across reconnect;
+- completion through the currently active session;
+- structured logging for automated verification and analysis.
+
+Migration preserves the media run, QuicVid session, and Quinn connection.
+Reconnect preserves the media run and frame timeline while creating a
+replacement connection, session, and HELLO.
+
+No further recovery mechanism is planned.
 
 ## Measurement and comparison pipeline
 
@@ -32,7 +44,7 @@ migration_demo.py
 ## Committed experiment
 
 `results/recovery-experiment-01/` contains ten migration and ten reconnect
-runs. All 20 completed successfully and produced zero analysis errors.
+trials. All 20 completed successfully and produced zero analysis errors.
 
 | Metric | Migration | Reconnect |
 |---|---:|---:|
@@ -70,17 +82,53 @@ Strategy-specific action duration is diagnostic only because migration and
 reconnect use different completion events.
 
 Reconnect frame loss is aggregated across both transport sessions by
-`media_run_id`; the S2-local receive summary is not treated as the global
-result.
+`media_run_id`; the replacement session's local result is not treated as the
+media-run-wide result.
 
-## Tests
+## Final demonstration
 
-```bash
-python3 -m unittest discover -s tests -v
-python3 -m py_compile scripts/mininet/*.py tests/*.py
+A preview-mode demonstration is committed at:
+
+```text
+results/final-demo/simultaneously-preview.mp4
 ```
 
-Rust validation:
+The clip shows the preview continuing through the recovery workflow while the
+terminal output remains visible. The structured logs and result JSON remain the
+primary validation evidence; the video is supplementary visual evidence.
+
+## Reproducibility environment
+
+Recorded final environment:
+
+```text
+Git revision:       631d82d18d5cd4542f3132078a14fb6a7815fda6
+Operating system:   Ubuntu 24.04.1 LTS
+Kernel:             Linux 6.8.0-136-generic, aarch64
+Python:             3.12.3
+Pillow:             10.2.0
+Rust compiler:      rustc 1.92.0
+Cargo:              1.92.0
+Open vSwitch:       3.3.4
+iproute2:           6.1.0
+```
+
+The captured output did not report a Mininet version. `matplotlib` was also not
+installed in this runtime, so no matplotlib version should be claimed for the
+final validation environment.
+
+At capture time the worktree contained two untracked/generated entries:
+
+```text
+final-environment.txt
+scripts/mininet/__pycache__/
+```
+
+These should be removed or ignored before clean-checkout validation.
+
+## Validation commands
+
+Rust:
 
 ```bash
 cargo fmt --manifest-path quic-vid/Cargo.toml --check
@@ -89,14 +137,32 @@ cargo clippy --manifest-path quic-vid/Cargo.toml   --all-targets --all-features 
 cargo build --release --manifest-path quic-vid/Cargo.toml
 ```
 
-## Remaining Epic 5.4 work
+Python:
 
-- produce one verified final migration run;
-- produce one verified final reconnect run;
-- record short demonstration clips;
-- prepare the advisor-facing walkthrough;
-- update the final report;
-- validate the documented workflow from a clean checkout;
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m py_compile scripts/mininet/*.py tests/*.py
+```
+
+Mininet smoke checks:
+
+```bash
+sudo mn -c
+sudo mn --switch ovsbr --test pingall
+test -x quic-vid/target/release/quic-vid
+python3 scripts/mininet/migration_demo.py --help
+python3 -m scripts.mininet.recovery_experiment --help
+```
+
+## Remaining finalization work
+
+Implementation and experiment work are complete. Remaining tasks are:
+
+- remove temporary files and Python caches;
+- run the complete validation suite from a clean worktree or checkout;
+- record the validation result;
+- finish the final report;
+- prepare the advisor walkthrough;
 - prepare the submission package.
 
-No new recovery mechanism is planned.
+No new recovery implementation is required.
