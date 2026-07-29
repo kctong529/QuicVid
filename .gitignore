@@ -48,3 +48,17 @@ tmp/
 /external/quiche/
 
 **/test-frames/
+
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Generated recovery experiments and raw evidence
+artifacts/
+results/**/client.log
+results/**/server.log
+results/**/runner.stdout.log
+results/**/runner.stderr.log
+results/**/path-*-tcpdump.log
+results/**/impairment.log
+

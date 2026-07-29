@@ -1,452 +1,217 @@
 # QuicVid
 
-**A Quinn-based video-call prototype for demonstrating robust call continuity during network changes**
+QuicVid is a Quinn-based Rust prototype for evaluating media continuity during
+network-path failure.
 
-QuicVid is a bachelor final project at Aalto University. The engineering problem is that a video-call application is normally built on top of a transport connection that assumes the endpoint's network address remains stable. When a laptop changes network, a wireless link is interrupted, a NAT binding changes, or a client moves to a different path, the application may lose the active media session even though the user still thinks they are in the same call.
+It compares two proactive recovery strategies under the same Mininet failure
+scenario:
 
-This project asks a concrete engineering question:
+- **QUIC migration** rebinds the existing Quinn endpoint and preserves the
+  connection and QuicVid session.
+- **QUIC reconnect** creates a replacement connection and session while
+  preserving the same logical media run and global frame timeline.
 
-> Can a desktop video-call prototype use QUIC connection migration to keep an active media session alive across a controlled network/address change, with less visible disruption than a simple baseline that has to reconnect or loses session continuity?
-
-The scope is therefore not “build a production Zoom replacement.” The scope is a focused product prototype with a clear demonstration:
-
-1. run a video-call app as separate client and server instances;
-2. first send repeatable fake video frames over Quinn/QUIC datagrams, then add real video if the core migration path is stable;
-3. trigger client-side migration while the call is active;
-4. show that the QUIC session remains the same application call when migration succeeds;
-5. compare the result with a simple non-migrating baseline;
-6. log frame disruption, peer address changes, and reconnect/session behavior.
-
-For the full project plan, see [`PLAN.md`](PLAN.md).
-
-For the current repository status and runnable prototype commands, see [`docs/current-status.md`](docs/current-status.md).
+Generated JPEG test-pattern frames travel over QUIC DATAGRAMs. QUIC streams
+carry session control messages, and structured logs feed a repeatable Python
+analysis pipeline.
 
 ## Project background
 
-This project started in September with a more ambitious plan: to build a QUIC-based video-call system using quiche, Qt, FFmpeg, mobile-style handover experiments, commercial video-app comparisons, and possibly user-study-style evaluation.
+QuicVid began in September with a broader plan to build a QUIC-based video-call
+system using quiche, Qt, FFmpeg, mobile-style handover experiments,
+commercial-application comparisons, and possibly user-study-style evaluation.
 
-That original plan helped define the motivation, but it did not become the actual implementation path. In practice, the work from the earlier phase focused mainly on understanding QUIC migration and building smaller experiments around it. The most useful results from that phase are the Quinn-based `quinn-ping` and `mouse-coordinates` prototypes, which already demonstrate connection setup, datagram traffic, endpoint rebinding, and session continuity behavior.
+That plan established the original motivation, but it did not become the final
+implementation path. The early phase instead produced smaller experiments for
+understanding QUIC connection migration, especially the Quinn-based
+`quinn-ping` and `mouse-coordinates` prototypes. Those experiments established
+connection setup, QUIC DATAGRAM traffic, endpoint rebinding, and connection
+continuity across address changes.
 
-The project is now being restarted from that more realistic foundation. The current direction is to turn the working Quinn experiments into a desktop video-call prototype that clearly demonstrates the benefit of QUIC for robust call continuity during controlled network changes.
+The current project builds on that foundation with a focused Quinn-based media
+prototype, a deterministic dual-path Mininet environment, proactive migration
+and reconnect strategies, and a reproducible measurement pipeline.
 
 ## Academic context
 
 - **Student:** Tong Ki Chun
 - **Advisor:** Pasi Sarolahti
-- **Institution:** Aalto University, Department of Electrical Engineering
-- **Type:** Bachelor's final project
+- **Institution:** Aalto University, School of Electrical Engineering
+- **Project type:** Bachelor's final project
 
 ## Engineering problem and project goal
 
-The project focuses on a transport-level robustness problem in video-call applications. Video calls are long-lived interactive sessions, but common transport designs bind connection state to the currently used network address and port. When that address changes, the media application may need to reconnect, recreate state, or recover at the application layer. For a user, that appears as a frozen video, dropped call, or long recovery delay.
+Video calls are long-lived interactive sessions, but a network path may change
+while the user still considers the call to be the same logical session. A
+wireless interruption, address change, path failure, or changed UDP binding can
+force a conventional application to reconnect and recreate transport or
+application state. To the user, this may appear as frozen media, frame loss, a
+long recovery pause, or a dropped call.
 
-QUIC offers a different design point: the connection can be identified by connection IDs rather than only by the IP/port tuple, and a new path can be validated while the connection remains logically the same session. QuicVid uses this property as the main engineering idea.
+QUIC provides a different design point. A connection is identified by
+connection IDs rather than only by its current IP address and port, so an
+endpoint can validate and adopt another path while retaining the same logical
+transport connection.
 
-The goal is to build a runnable prototype that makes the benefit visible:
+QuicVid asks the following engineering question:
 
-- a live or repeatable video stream is sent over Quinn/QUIC;
-- the client changes its local network path or UDP binding during the call;
-- the server observes the peer address/port change;
-- the application keeps the same call session when migration succeeds;
-- logs show the frame disruption around the migration event;
-- a simple baseline shows the cost of not having QUIC migration support.
+> Can a media prototype use QUIC connection migration to preserve transport and
+> application-session continuity across a controlled path failure, and how does
+> that behavior compare with proactive reconnect using the same failure
+> detector?
 
-The expected achievement is a **controlled proof of product feasibility**: QuicVid should demonstrate that QUIC migration can reduce application-visible disruption for a video-call workload under the tested conditions. It does not claim to solve public Internet NAT traversal, mobile handover, conferencing, or production video quality.
+The project goal is a controlled proof of feasibility:
 
-## Current implementation direction
+1. send a repeatable media workload between separate Quinn client and server
+   processes;
+2. trigger a sustained failure of the active path during the media run;
+3. recover either by migrating the existing connection or proactively
+   reconnecting on the alternate path;
+4. preserve one logical `MediaRun` and continuous frame timeline;
+5. measure receiver-visible interruption, global frame loss, completion, and
+   transport identity;
+6. produce reproducible experiment records suitable for the final report.
 
-The active implementation path is:
-
-- **Language:** Rust
-- **QUIC library:** Quinn
-- **Architecture:** separate client and server app instances
-- **Media transport:** QUIC datagrams
-- **Control messages:** QUIC streams
-- **Migration mechanism:** Quinn endpoint rebinding and controlled network experiments
-- **Target:** desktop application
-
-The stack is intentionally revised from the old plan:
-
-| Area | Current decision |
-|---|---|
-| QUIC implementation | Quinn is required for all new product work |
-| quiche | Legacy/background only |
-| GUI toolkit | Not fixed; Rust-native GUI such as `egui`/`eframe` or `iced` is preferred |
-| Qt | Old plan item; optional, not required |
-| Video pipeline | Start simple with test-pattern/raw/resized/JPEG-style frames before full codec integration |
-| FFmpeg/GStreamer | Optional later backend if needed for quality or bandwidth control |
-| Audio | Important follow-up after video + migration works |
-
-Older quiche work remains in the repository as legacy/background material. New product work should use Quinn. Qt and FFmpeg were part of the original aspirational plan, but they are not required for the first complete prototype unless they become the fastest practical route to a working demo.
+The goal is not to build a production Zoom replacement. The current prototype
+does not attempt public-Internet NAT traversal, conferencing, adaptive media,
+production retry behavior, or physical mobile-network handover.
 
 ## Important note about the old plan
 
-Earlier project documents should be read as planning history, not as the current implementation contract. The revised project should be judged by whether it demonstrates the QUIC robustness benefit in a working video-call prototype, not by whether it follows the old Qt/FFmpeg/quiche stack exactly.
+Earlier planning documents are project history, not the current implementation
+contract.
 
-## Current repository status
+The active implementation uses Rust and Quinn, generated JPEG test-pattern
+frames, QUIC DATAGRAM media transport, QUIC stream control messages, a
+dual-path Mininet topology, and Python-based experiment analysis. The earlier
+quiche, Qt, FFmpeg, broad commercial-app comparison, and user-study ideas are
+not required deliverables.
 
-The repository currently contains experimental work and project history rather than a finished app.
+The project should therefore be evaluated against the implemented engineering
+goal: demonstrating and measuring media continuity during controlled path
+failure, including a fair migration-versus-reconnect comparison—not against the
+original aspirational stack or scope.
 
-### `quinn-ping/`
+## Current result
 
-A basic Quinn client/server ping experiment.
+The first committed experiment contains 10 migration and 10 reconnect trials.
+All 20 runs completed successfully.
 
-It demonstrates:
+| Metric | Migration | Reconnect |
+|---|---:|---:|
+| Successful runs | 10/10 | 10/10 |
+| Median largest receive gap | 937.4 ms | 802.0 ms |
+| Mean largest receive gap | 973.3 ms | 830.2 ms |
+| Median missing frames | 2 | 7 |
+| Mean missing frames | 2.4 | 7.6 |
+| Median recovery-action duration | 156 ms | 1 ms |
 
-- QUIC connection setup with Quinn;
-- bidirectional stream communication;
-- repeated ping/pong messages;
-- endpoint rebinding;
-- stable connection behavior across address/port changes;
-- RTT and application-latency logging.
+Reconnect restored receiver activity sooner in this experiment, while
+migration preserved more frames and retained one connection and session.
+Strategy-specific action duration is diagnostic; receiver-side frame gap is the
+primary cross-strategy interruption metric.
 
-This is the current sanity check for basic Quinn migration behavior.
+The committed dataset is under
+[`results/recovery-experiment-01/`](results/recovery-experiment-01/).
 
-### `mouse-coordinates/`
-
-A Quinn datagram experiment that streams mouse movement data.
-
-It demonstrates:
-
-- real-time telemetry over QUIC datagrams;
-- low-latency fire-and-forget updates;
-- server-side terminal visualization;
-- session persistence during rebinding/migration;
-- a traffic pattern closer to video media than ping/pong.
-
-This is the closest existing stepping stone toward video frame transport.
-
-### quiche files and notes
-
-The repository includes older C/quiche experiments and documentation. These helped explore QUIC migration concepts, path validation, connection IDs, and lower-level API behavior.
-
-They are now legacy context only. The main QuicVid product should not depend on quiche.
-
-### baseline-study documents
-
-The old baseline-study documents are useful as motivation, but the full commercial-app/user-study plan is no longer the main evaluation scope.
-
-The revised project should use a smaller controlled baseline comparison against the QuicVid prototype.
-
-## Runtime architecture
-
-QuicVid should run as two app instances: one server and one client.
+## Repository map
 
 ```text
-Client app instance                         Server app instance
--------------------                         -------------------
-GUI                                        GUI or receiver view
-Camera capture                             Camera capture optional
-Video encoder                              Video encoder optional
-Video sender  ───── QUIC datagrams ─────▶  Video receiver
-Video receiver ◀──── QUIC datagrams ─────  Video sender optional
-Control task  ───── QUIC stream ────────▶  Control task
-Migration trigger                          Migration observer
-Logs                                       Logs
+quic-vid/                  active Quinn media prototype
+scripts/mininet/           topology, launchers, verification, and analysis
+tests/                     Python recovery-analysis tests
+results/                   compact committed experiment datasets
+docs/current-status.md     implementation and milestone status
+docs/mininet-migration.md  runnable Mininet workflows
+docs/recovery-analysis.md  result schema and analysis pipeline
+PLAN.md                    current scope and roadmap
+
+quinn-ping/                earlier Quinn migration experiment
+mouse-coordinates/         earlier Quinn DATAGRAM experiment
+docs/quiche-*.md           legacy quiche study notes
 ```
 
-### Server role
+New implementation work belongs in `quic-vid/` and `scripts/mininet/`. Earlier
+Quinn and quiche material is retained as project history.
 
-The server app:
-
-- listens on a UDP port;
-- accepts Quinn connections;
-- receives video datagrams;
-- displays remote video;
-- handles reliable control messages;
-- logs peer address changes, frame delivery, and migration events;
-- optionally sends its own video back to the client in bidirectional mode.
-
-### Client role
-
-The client app:
-
-- connects to the server;
-- generates fake video frames first, and later captures camera or test-pattern frames;
-- sends video over QUIC datagrams;
-- handles reliable control messages;
-- triggers migration during the robustness demo;
-- logs frame sending and migration timing;
-- optionally receives and displays server video in bidirectional mode.
-
-## Execution modes
-
-The project should support four execution modes.
-
-### 1. Local two-process mode
-
-Both server and client run on the same machine.
-
-Example target commands:
+## Build
 
 ```bash
-cargo run --bin quic-vid -- server --listen 127.0.0.1:4433
-cargo run --bin quic-vid -- client --connect 127.0.0.1:4433
+cargo build --release --manifest-path quic-vid/Cargo.toml
+sudo mn -c
 ```
 
-Purpose:
+The launcher expects `quic-vid/target/release/quic-vid`.
 
-- fastest development loop;
-- validates GUI, media capture, media rendering, Quinn connection, packet format, and logging;
-- allows initial migration testing through local UDP socket rebinding.
+## Run one recovery demo
 
-Expected result:
-
-- client captures video;
-- server displays remote video;
-- migration button or auto-migration flag changes the client endpoint binding;
-- server logs a peer address/port change;
-- the QUIC call remains active if migration succeeds.
-
-### 2. Two-host LAN mode
-
-Server and client run on different reachable machines.
-
-Example target commands:
+Interactive migration:
 
 ```bash
-# Host A
-cargo run --bin quicvid -- --mode server --listen 0.0.0.0:4433
-
-# Host B
-cargo run --bin quicvid -- --mode client --connect <server-ip>:4433
+sudo python3 scripts/mininet/migration_demo.py   --preset health-sustained   --log-dir /tmp/quicvid-migrate
 ```
 
-Purpose:
+Interactive reconnect:
 
-- demonstrates the app as an actual two-machine video-call prototype;
-- avoids relying only on loopback behavior;
-- supports a more convincing product demo.
-
-Expected result:
-
-- video is sent from one host to the other;
-- optionally video is bidirectional;
-- controlled migration/rebinding can be triggered during the call;
-- the server observes address/port changes and logs the result.
-
-Limitations:
-
-- no public Internet NAT traversal;
-- no account system;
-- both machines must be directly reachable.
-
-### 3. Mininet/evaluation mode
-
-The client and server run inside a controlled Mininet topology.
-
-Simple target topology:
-
-```text
-h1/client ─── s1 ─── h2/server
+```bash
+sudo python3 scripts/mininet/migration_demo.py   --preset reconnect-sustained   --log-dir /tmp/quicvid-reconnect
 ```
 
-Possible later topology:
+Noninteractive migration:
 
-```text
-             path A
-h1/client ─────────── h2/server
-     │                  ▲
-     └──── path B ──────┘
+```bash
+sudo python3 scripts/mininet/migration_demo.py   --noninteractive   --preset health-sustained   --recovery-strategy migrate   --no-quiet-media-logs   --log-dir /tmp/quicvid-migrate
 ```
 
-Purpose:
+Noninteractive reconnect:
 
-- repeatable robustness testing;
-- scripted migration/disruption events;
-- controlled comparison between QUIC and baseline behavior;
-- evidence for the final report.
-
-This mode should be implemented after local two-process and two-host modes are working.
-
-## GUI and media backend policy
-
-QuicVid should not block on Qt or FFmpeg unless they are clearly the fastest route to a working prototype.
-
-For the GUI, prefer a Rust-native toolkit that integrates cleanly with async Quinn tasks. `egui`/`eframe` or `iced` are good candidates. The GUI should stay thin and communicate with transport/media workers through channels.
-
-For media, use a staged path:
-
-1. test-pattern frames for repeatable network testing;
-2. live camera preview;
-3. simple transmitted frames, such as raw resized frames or JPEG-compressed frames;
-4. datagram chunking and frame reassembly if needed;
-5. FFmpeg or GStreamer only if simple frame transport is not enough for the robustness demo.
-
-This keeps the project focused on the core claim: QUIC can help preserve a video-call session during controlled network migration.
-
-## Transport design
-
-QuicVid should use two kinds of QUIC data flow.
-
-### QUIC streams
-
-Reliable QUIC streams are used for control messages:
-
-- call setup;
-- call shutdown;
-- media settings;
-- migration/debug messages;
-- graceful teardown.
-
-### QUIC datagrams
-
-QUIC datagrams are used for media:
-
-- video frame packets or chunks;
-- optional audio packets;
-- low-latency telemetry.
-
-Datagrams are preferred for media because late video/audio data is often less useful than fresh data. This also builds naturally on the existing `mouse-coordinates` datagram prototype.
-
-## Migration model
-
-The first migration demo should be client-side.
-
-The client triggers migration during an active video call by rebinding the Quinn endpoint to a new UDP socket/local port. Later, where possible, this can be extended to binding to a different local interface or address.
-
-The expected observation is:
-
-- the server sees the client's remote address/port change;
-- QUIC keeps the connection associated with the same session;
-- video continues or resumes without a full application reconnect;
-- logs show frame disruption around the migration event.
-
-## Baseline model
-
-The baseline exists to show what QUIC adds.
-
-The baseline should use the same or similar video workload but without QUIC migration support.
-
-Possible baseline choices:
-
-1. TCP video stream;
-2. UDP video stream with manual application-level session token;
-3. reconnect-based video sender.
-
-The minimum requirement is one clear baseline where the same disruption causes a visible interruption, reconnect, or new session.
-
-## Definition of done
-
-The project is complete when:
-
-1. QuicVid runs as a desktop application.
-2. The app uses Quinn as the active QUIC implementation.
-3. The app does not require quiche, Qt, or FFmpeg unless they were explicitly selected as active implementation dependencies.
-4. The app can run in server mode.
-5. The app can run in client mode.
-6. Server and client can run as separate processes.
-7. Local two-process mode is documented.
-8. Two-host mode is documented or has a clear blocker.
-9. The client captures live camera video.
-10. The receiver displays remote video.
-11. Video data is transported over Quinn/QUIC.
-12. A controlled migration can be triggered during an active call.
-13. The app shows or logs migration state.
-14. The QUIC session attempts to continue after migration.
-15. A baseline demo without QUIC migration support exists.
-16. Logs or summary output compare QUIC and baseline behavior.
-17. The README explains what the demo proves and does not prove.
-18. Limitations are documented clearly.
-
-## Minimum successful demo
-
-The minimum successful final demo has two runs.
-
-### Baseline run
-
-Run a simple non-QUIC-migration video transport.
-
-Then trigger a controlled disruption or address/path change.
-
-Show one of:
-
-- video freezes;
-- stream stops;
-- reconnect is required;
-- a new session starts;
-- interruption is visibly larger than in the QUIC demo.
-
-### QUIC run
-
-Run QuicVid over Quinn.
-
-Then trigger migration during the active video call.
-
-Show:
-
-- the same call remains active;
-- the server observes peer address/port change;
-- the app does not silently start a new session;
-- video continues or resumes with bounded disruption;
-- logs summarize the migration event.
-
-Example target summary:
-
-```text
-Experiment: quic-video-migration-001
-Migration triggered at: 12.40s
-Connection survived: yes
-Application reconnect required: no
-Peer address changed: yes
-Frames sent: 472
-Frames received: 459
-Frames lost near migration: 8
-Estimated visible freeze: 280 ms
+```bash
+sudo python3 scripts/mininet/migration_demo.py   --noninteractive   --preset health-sustained   --recovery-strategy reconnect   --no-quiet-media-logs   --log-dir /tmp/quicvid-reconnect
 ```
 
-## Target repository structure
+## Verify and analyze one run
 
-This is the intended future structure, not necessarily the current state.
-
-```text
-QuicVid
-├── quicvid/                 # main Rust app crate
-│   ├── gui/                 # desktop window, controls, status display
-│   ├── media/               # camera capture, encoding, decoding, rendering
-│   ├── transport/           # Quinn connection, datagrams, streams, migration
-│   ├── protocol/            # media/control packet formats
-│   └── logging/             # frame, packet, connection, and migration logs
-│
-├── baseline/                # simple non-migrating video baseline
-│
-├── experiments/
-│   ├── local/               # local two-process scripts
-│   ├── two-host/            # LAN demo notes/scripts
-│   ├── mininet/             # controlled migration scenarios
-│   └── analysis/            # log summaries and result tables
-│
-├── docs/
-│   ├── architecture.md
-│   ├── migration-demo.md
-│   ├── evaluation-plan.md
-│   ├── project-history.md
-│   └── limitations.md
-│
-└── results/
-    ├── raw/
-    └── summary.md
+```bash
+python3 scripts/mininet/verify_recovery.py   --strategy migrate   --client-log /tmp/quicvid-migrate/client.log   --server-log /tmp/quicvid-migrate/server.log
 ```
 
-## Current next steps
+```bash
+python3 -m scripts.mininet.recovery_result   --client-log /tmp/quicvid-migrate/client.log   --server-log /tmp/quicvid-migrate/server.log   --output /tmp/quicvid-migrate/result.json
+```
 
-1. Finish Epic 1.1 recovery docs and cleanup.
-2. Create the main `quic-vid` app crate.
-3. Add server/client CLI modes.
-4. Add Quinn server/client setup.
-5. Send an initial client hello over a QUIC stream.
-6. Add session ID generation.
-7. Add structured JSONL logging.
-8. Add fake video frame format and generator.
-9. Send numbered fake frames over QUIC datagrams.
-10. Add frame receive tracking and summaries.
+## Run repeated experiments
 
-## Suggested final claim
+```bash
+sudo python3 -m scripts.mininet.recovery_experiment   --output-root artifacts/recovery-experiment   --repetitions 10   --scenario-command   '["python3","scripts/mininet/migration_demo.py","--noninteractive","--preset","health-sustained","--recovery-strategy","{strategy}","--no-quiet-media-logs","--log-dir","{trial_dir}"]'
+```
 
-A careful final claim would be:
+The runner interleaves strategies, writes one `result.json` per completed run,
+and generates `summary.csv`.
 
-> QuicVid demonstrates, under controlled local/LAN/Mininet conditions, that a Quinn-based video-call prototype can keep the same active media session across client-side migration events and reduce application-visible disruption compared with a simple baseline that lacks QUIC migration support.
+## Documentation
 
-Avoid stronger claims such as:
+- [`PLAN.md`](PLAN.md)
+- [`docs/current-status.md`](docs/current-status.md)
+- [`docs/mininet-migration.md`](docs/mininet-migration.md)
+- [`docs/recovery-analysis.md`](docs/recovery-analysis.md)
+- [`quic-vid/README.md`](quic-vid/README.md)
+- [`results/recovery-experiment-01/README.md`](results/recovery-experiment-01/README.md)
 
-> QUIC guarantees seamless video calls in real-world networks.
+## Validation
+
+```bash
+cargo fmt --manifest-path quic-vid/Cargo.toml --check
+cargo test --manifest-path quic-vid/Cargo.toml
+cargo clippy --manifest-path quic-vid/Cargo.toml   --all-targets --all-features -- -D warnings
+python3 -m unittest discover -s tests -v
+python3 -m py_compile scripts/mininet/*.py tests/*.py
+```
+
+## Scope
+
+QuicVid is a controlled proof of concept, not a production video-call system.
+The current evaluation uses a deterministic Mininet topology, one sustained
+failure pattern, one media configuration, and one detector configuration. It
+does not include physical Wi-Fi handover, NetworkManager-triggered recovery,
+NAT traversal, conferencing, adaptive media, a TCP baseline, or
+timeout-triggered reconnect.

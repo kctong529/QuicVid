@@ -59,3 +59,11 @@ The remaining migration trials had receive gaps between 935.3 and 963.8 ms.
 - `runs/*.json`: structured per-run results used to build the summary
 
 Raw client/server logs and packet captures are intentionally excluded from Git because they are large and reproducible from the command above.
+
+## Reproduce
+
+See [`../../docs/mininet-migration.md`](../../docs/mininet-migration.md) and
+[`../../docs/recovery-analysis.md`](../../docs/recovery-analysis.md).
+
+The committed JSON records are compact evidence for Epic 5.4. The descriptive
+values above apply only to this controlled Mininet configuration.

@@ -1,184 +1,79 @@
-# Current Project Status
+# Current status
 
-## Active direction
+Updated after completion of Epic 5.3.
 
-QuicVid is now a Quinn-based video-call prototype. New product work should use Quinn. Older quiche work is kept as legacy/background material.
+## Working implementation
 
-## Existing prototypes
+The active `quic-vid` application supports Quinn client/server modes, QUIC
+stream control, generated JPEG video over fragmented QUIC DATAGRAMs,
+receiver-side reassembly and preview, transport-independent media runs,
+controlled and automatic migration, proactive reconnect, continuous frame IDs
+across reconnect, and global completion through the active session.
 
-### quinn-ping
+Migration preserves the media run, session, and Quinn connection. Reconnect
+preserves the media run and frame timeline while creating a new connection,
+session, and HELLO.
 
-Purpose:
-- Basic Quinn client/server prototype.
-- Useful reference for Epic 1.2, especially Quinn endpoint setup, stream use, and connection/rebinding behavior.
+## Measurement pipeline
 
-Cargo package:
-- `quinn-test`
-
-Binaries:
-- `client`
-- `server`
-
-Build status:
-- Verified on: 2026-05-11
-- Commands:
-
-```bash
-cd quinn-ping
-cargo metadata --no-deps --format-version 1
-cargo check
-cargo build
+```text
+migration_demo.py
+    -> client.log + server.log
+    -> recovery_result.py
+    -> result.json
+    -> recovery_summary.py / recovery_experiment.py
+    -> summary.csv
 ```
 
-Result:
+Modules:
 
-* `cargo check` succeeds.
-* `cargo build` succeeds.
-* Warning: `src/bin/server.rs` has an unused import, `net::SocketAddr`.
+- `recovery_analysis.py` parses structured events;
+- `recovery_identity.py` extracts run/session/connection identities;
+- `recovery_frames.py` unions validated frames across sessions;
+- `recovery_timing.py` extracts strategy-specific action timing;
+- `recovery_continuity.py` measures frame-ID and receiver-time gaps;
+- `recovery_result.py` writes versioned per-run JSON;
+- `recovery_summary.py` exports flat CSV rows;
+- `recovery_experiment.py` runs repeated interleaved trials;
+- `verify_recovery.py` checks lifecycle evidence.
 
-Runtime status:
-- Verified in Mininet on 2026-05-11.
+## Committed experiment
 
-Topology:
-- `h1`: `10.0.0.1/24`
-- `h2`: `10.0.0.2/24`
-- server runs on `h1`
-- client runs on `h2`
+`results/recovery-experiment-01/` contains 10 migration and 10 reconnect runs.
 
-Commands:
+| Metric | Migration | Reconnect |
+|---|---:|---:|
+| Success rate | 10/10 | 10/10 |
+| Median largest receive gap | 937.4 ms | 802.0 ms |
+| Mean largest receive gap | 973.3 ms | 830.2 ms |
+| Median missing frames | 2 | 7 |
+| Mean missing frames | 2.4 | 7.6 |
+| Duplicate frames | 0 | 0 |
+| Out-of-order frames | 0 | 0 |
+
+The first experiment shows a trade-off: reconnect resumed receiver activity
+sooner, while migration preserved more frames and transport identity.
+
+## Tests
+
+The Python recovery suite contains 63 tests.
 
 ```bash
-sudo python3 scripts/mininet-two-hosts.py
+python3 -m unittest discover -s tests -v
+python3 -m py_compile scripts/mininet/*.py tests/*.py
 ```
 
-Inside Mininet:
+Rust validation:
 
 ```bash
-h1 bash -lc 'cd /home/ubuntu/QuicVid/quinn-ping && ./target/debug/server > /tmp/quinn-ping-server.log 2>&1 &'
-h2 bash -lc 'cd /home/ubuntu/QuicVid/quinn-ping && ./target/debug/client > /tmp/quinn-ping-client.log 2>&1'
-h1 cat /tmp/quinn-ping-server.log
-h2 cat /tmp/quinn-ping-client.log
+cargo fmt --manifest-path quic-vid/Cargo.toml --check
+cargo test --manifest-path quic-vid/Cargo.toml
+cargo clippy --manifest-path quic-vid/Cargo.toml   --all-targets --all-features -- -D warnings
+cargo build --release --manifest-path quic-vid/Cargo.toml
 ```
 
-Result:
+## Active work
 
-* server starts on `0.0.0.0:4433`
-* client connects to `10.0.0.1:4433`
-* client sends repeated `PING` messages
-* server responds with `PONG`
-* client triggers endpoint rebinding every 5 rounds
-* server observes the peer source port change during the run
-* the same stable QUIC session ID continues after rebinding
-
-Observed example:
-
-* server saw peer change from `10.0.0.2:35506` to `10.0.0.2:37098`
-* stable session ID remained `275342434541600`
-
-Conclusion:
-
-* `quinn-ping` is a working Mininet runtime reference for Quinn client/server setup and endpoint rebinding.
-
-### mouse-coordinates
-
-Purpose:
-- Quinn datagram prototype.
-- Useful reference for Epic 1.3, especially fake-video datagram streaming.
-
-Cargo package:
-- `mouse-coordinates`
-
-Binaries:
-- `client`
-- `server`
-
-Build status:
-- Verified on: 2026-05-11
-- Commands:
-
-```bash
-cd mouse-coordinates
-cargo metadata --no-deps --format-version 1
-cargo check
-cargo build
-````
-
-Result:
-
-* `cargo check` succeeds.
-* `cargo build` succeeds.
-
-Runtime status:
-- Verified in Mininet on 2026-05-11.
-
-Topology:
-- `h1`: `10.0.0.1/24`
-- `h2`: `10.0.0.2/24`
-- server runs on `h1`
-- client runs on `h2`
-
-Commands:
-
-```bash
-sudo python3 scripts/mininet-two-hosts.py
-```
-
-Inside Mininet:
-
-```bash
-h1 bash -lc 'cd /home/ubuntu/QuicVid/mouse-coordinates && ./target/debug/server'
-h2 bash -lc 'cd /home/ubuntu/QuicVid/mouse-coordinates && ./target/debug/client'
-```
-
-Result:
-
-* server starts on `0.0.0.0:4433`
-* client connects to `10.0.0.1:4433`
-* client sends coordinate datagrams
-* server receives QUIC datagrams with `connection.read_datagram()`
-* server displays the received coordinate position in the terminal
-* client prints packet number, position, and RTT
-
-Observed example:
-
-* server displayed peer address `10.0.0.2:54545`
-* client sent coordinate packets such as `Pkt 347`, `Pkt 348`, and later packets
-* server displayed current position updates such as `Pos: 141,-160`
-
-Caveat:
-
-* the client reads real mouse input from `/dev/input/mice`
-* this is Linux-specific and may require appropriate environment/permissions
-* for the new `quic-vid` app, fake video frames should use generated frame data instead of OS mouse input
-
-Conclusion:
-
-* `mouse-coordinates` is a working Mininet runtime reference for Quinn datagram send/receive behavior.
-
-## Legacy/background work
-
-### quiche experiments
-
-The C/quiche experiments and quiche notes are legacy/background material. They helped explore QUIC migration, path validation, and connection IDs, but new QuicVid product work should use Quinn.
-
-### baseline-study
-
-The baseline-study notes are useful project motivation, but the revised evaluation plan should use a smaller controlled baseline comparison.
-
-## Local setup notes
-
-Useful prototype checks:
-
-```bash
-cd quinn-ping
-cargo check
-cargo build
-
-cd ../mouse-coordinates
-cargo check
-cargo build
-```
-
-## Next implementation step
-
-Epic 1.2: create the main `quic-vid` app skeleton with server/client modes, Quinn setup, session IDs, an initial control-stream hello, and structured JSONL logs.
+Epic 5.4 remains: final aggregate statistics and plots, interpretation and
+limitations, verified demo clips, advisor walkthrough, final report, and
+submission packaging. No new recovery mechanism is planned.
