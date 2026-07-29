@@ -6,7 +6,10 @@ use crate::{
 };
 use image::GenericImageView;
 use quinn::Connection;
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 use uuid::Uuid;
 
 const POST_DONE_DRAIN: Duration = Duration::from_millis(200);
@@ -17,6 +20,7 @@ pub async fn run(listen: SocketAddr, preview_sender: Option<PreviewSender>) -> a
 
     let server_config = tls::server_config()?;
     let endpoint = quinn::Endpoint::server(server_config, listen)?;
+    let server_started = Instant::now();
 
     println!("event=server_started listen={}", endpoint.local_addr()?);
 
@@ -34,6 +38,7 @@ pub async fn run(listen: SocketAddr, preview_sender: Option<PreviewSender>) -> a
                                         handle_connection(
                                             connection,
                                             connection_preview_sender,
+                                            server_started,
                                         ).await
                                     {
                                         eprintln!(
@@ -76,6 +81,7 @@ pub async fn run(listen: SocketAddr, preview_sender: Option<PreviewSender>) -> a
 async fn handle_connection(
     connection: Connection,
     preview_sender: Option<PreviewSender>,
+    server_started: Instant,
 ) -> anyhow::Result<()> {
     println!(
         "event=client_connected connection={} peer={}",
@@ -125,6 +131,8 @@ async fn handle_connection(
                             &mut assembler,
                             &mut tracker,
                             session_started.elapsed(),
+
+                            server_started.elapsed(),
                             preview_sender.as_ref(),
                         );
                     }
@@ -190,6 +198,8 @@ async fn handle_connection(
                                 &mut assembler,
                                 &mut tracker,
                                 session_started.elapsed(),
+
+                                server_started.elapsed(),
                                 preview_sender.as_ref(),
                             );
                         }
@@ -269,6 +279,7 @@ fn handle_media_datagram(
     assembler: &mut FrameAssembler,
     tracker: &mut FrameTracker,
     received_at: Duration,
+    server_received_at: Duration,
     preview_sender: Option<&PreviewSender>,
 ) {
     let media = match MediaDatagram::decode(bytes) {
@@ -346,12 +357,13 @@ fn handle_media_datagram(
             );
 
             println!(
-                "event=jpeg_frame_validated session={} frame={} width={} height={} jpeg_bytes={}",
+                "event=jpeg_frame_validated session={} frame={} width={} height={} jpeg_bytes={} received_at_ms={}",
                 frame.session_id,
                 frame.frame_id,
                 width,
                 height,
                 frame.bytes.len(),
+                server_received_at.as_secs_f64() * 1000.0,
             );
         }
 
