@@ -92,6 +92,12 @@ session's local missing count is not used as the media-run-wide loss result.
 
 The trial remained valid and is retained in the statistics and figures.
 
+## Demo
+
+A preview-mode demonstration is available at:
+
+[Final recovery demo](../final-demo/simultaneously-preview.mp4)
+
 ## Files
 
 - `summary.csv`: one flat comparison row per trial

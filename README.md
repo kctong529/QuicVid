@@ -92,6 +92,12 @@ goal: demonstrating and measuring media continuity during controlled path
 failure, including a fair migration-versus-reconnect comparison—not against the
 original aspirational stack or scope.
 
+# Final recovery demo
+
+Preview-mode demonstration of the recovery workflow:
+
+[Watch the recovery demo](https://github.com/kctong529/QuicVid/raw/refs/heads/main/results/final-demo/simultaneously-preview.mp4)
+
 ## Current result
 
 The first committed experiment contains 10 migration and 10 reconnect trials.
