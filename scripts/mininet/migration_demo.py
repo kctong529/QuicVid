@@ -2,6 +2,8 @@
 
 import argparse
 import shlex
+import subprocess
+import time
 from pathlib import Path
 
 from mininet.log import info, setLogLevel
@@ -188,6 +190,14 @@ def parse_args() -> argparse.Namespace:
             "directory. Existing files are overwritten."
         ),
     )
+    parser.add_argument(
+        "--noninteractive",
+        action="store_true",
+        help=(
+            "Run the server, captures, impairment, and client without opening "
+            "terminals; wait for completion and stop Mininet automatically."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -228,6 +238,9 @@ def apply_preset(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def validate_args(args: argparse.Namespace) -> None:
+    if args.noninteractive and args.log_dir is None:
+        raise ValueError("--noninteractive requires --log-dir")
+
     if args.fps <= 0:
         raise ValueError("--fps must be greater than zero")
 
@@ -394,6 +407,10 @@ def print_configuration(args: argparse.Namespace) -> None:
         f"{args.log_dir if args.log_dir is not None else 'disabled'}\n"
     )
     info(
+        "*** Launcher mode:       "
+        f"{'noninteractive' if args.noninteractive else 'interactive'}\n"
+    )
+    info(
         "*** Media logs:          "
         f"{'suppressed' if args.quiet_media_logs else 'enabled'}\n"
     )
@@ -425,6 +442,122 @@ def print_configuration(args: argparse.Namespace) -> None:
         info(f"*** Rebind target:       {args.rebind}\n")
         info(f"*** Rebind after:        {args.rebind_after_seconds} s\n")
 
+
+
+def process_command(command: str, log_path: Path) -> str:
+    quoted_log = shlex.quote(str(log_path))
+    return f"exec bash -lc {shlex.quote(f'set -o pipefail; {command} > {quoted_log} 2>&1')}"
+
+
+def stop_process(process, name: str, timeout_seconds: float = 2.0) -> None:
+    if process is None or process.poll() is not None:
+        return
+
+    info(f"*** Stopping {name}\n")
+    process.terminate()
+
+    try:
+        process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=timeout_seconds)
+
+
+def launch_noninteractive(net, args: argparse.Namespace) -> int:
+    client = net.get("client")
+    server = net.get("server")
+    r1 = net.get("r1")
+    r2 = net.get("r2")
+
+    assert args.log_dir is not None
+
+    server_log = args.log_dir / "server.log"
+    client_log = args.log_dir / "client.log"
+    path_a_log = args.log_dir / "path-a-tcpdump.log"
+    path_b_log = args.log_dir / "path-b-tcpdump.log"
+    impairment_log = args.log_dir / "impairment.log"
+
+    server_process = None
+    path_a_capture = None
+    path_b_capture = None
+    impairment_process = None
+
+    try:
+        impair_cmd = impairment_command(args)
+
+        if impair_cmd is not None:
+            client.cmd(f"rm -f {shlex.quote(str(HEALTH_START_MARKER))}")
+
+        info("*** Starting server process\n")
+        server_process = server.popen(
+            process_command(server_command(args), server_log),
+            shell=True,
+        )
+
+        info("*** Starting Path A capture\n")
+        path_a_capture = r1.popen(
+            process_command(
+                f"tcpdump -l -ni {shlex.quote('r1-eth0')} udp port 4433",
+                path_a_log,
+            ),
+            shell=True,
+        )
+
+        info("*** Starting Path B capture\n")
+        path_b_capture = r2.popen(
+            process_command(
+                f"tcpdump -l -ni {shlex.quote('r2-eth0')} udp port 4433",
+                path_b_log,
+            ),
+            shell=True,
+        )
+
+        if impair_cmd is not None:
+            info("*** Starting Path A impairment controller\n")
+            impairment_process = r1.popen(
+                process_command(impair_cmd, impairment_log),
+                shell=True,
+            )
+
+        # Give the server and capture processes a brief deterministic startup
+        # window before the media run begins.
+        time.sleep(0.25)
+
+        client_cmd = client_command(args)
+        if impair_cmd is not None:
+            client_cmd = (
+                f"touch {shlex.quote(str(HEALTH_START_MARKER))}; "
+                f"{client_cmd}"
+            )
+
+        info("*** Starting client process\n")
+        client_process = client.popen(
+            process_command(client_cmd, client_log),
+            shell=True,
+        )
+        client_returncode = client_process.wait()
+
+        info(f"*** Client exited with status {client_returncode}\n")
+
+        # Allow late datagrams, DONE processing, and log buffers to drain.
+        time.sleep(0.5)
+
+        if client_returncode != 0:
+            return client_returncode
+
+        if server_process.poll() is not None:
+            info(
+                "*** Server exited before cleanup with status "
+                f"{server_process.returncode}\n"
+            )
+            return server_process.returncode or 1
+
+        return 0
+    finally:
+        stop_process(impairment_process, "impairment controller")
+        stop_process(path_a_capture, "Path A capture")
+        stop_process(path_b_capture, "Path B capture")
+        stop_process(server_process, "server")
 
 def launch_terminals(net, args: argparse.Namespace) -> None:
     client = net.get("client")
@@ -499,7 +632,7 @@ def launch_terminals(net, args: argparse.Namespace) -> None:
     )
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
     args = apply_preset(args)
     validate_args(args)
@@ -528,6 +661,9 @@ def main() -> None:
     net = create_network()
 
     try:
+        if args.noninteractive:
+            return launch_noninteractive(net, args)
+
         launch_terminals(net, args)
 
         info("\n*** Migration demo ready\n")
@@ -535,6 +671,7 @@ def main() -> None:
         if args.impair_after_seconds is not None:
             info("*** Path A impairment will be scheduled relative to client start\n")
         input("*** Press Enter here when finished to stop Mininet...\n")
+        return 0
     finally:
         info("*** Stopping network\n")
         net.stop()
@@ -543,4 +680,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     setLogLevel("info")
-    main()
+    raise SystemExit(main())
